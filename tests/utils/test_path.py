@@ -17,16 +17,22 @@
 
 import os
 import pytest
+import aiohttp
 
-from fastapi import HTTPException
 
 from gns3server.utils.path import check_path_allowed, get_default_project_directory
 
 
-def test_check_path_allowed():
+def test_check_path_allowed(config, tmpdir):
 
-    with pytest.raises(HTTPException):
+    config.set("Server", "local", False)
+    config.set("Server", "projects_path", str(tmpdir))
+    with pytest.raises(aiohttp.web.HTTPForbidden):
         check_path_allowed("/private")
+
+    config.set("Server", "local", True)
+    check_path_allowed(str(tmpdir / "hello" / "world"))
+    check_path_allowed("/private")
 
 
 def test_get_default_project_directory(config):

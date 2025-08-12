@@ -17,11 +17,8 @@
 
 
 import configparser
-import pytest
 
 from gns3server.config import Config
-from gns3server.config import ServerConfig
-from pydantic import ValidationError
 
 
 def load_config(tmpdir, settings):
@@ -48,6 +45,7 @@ def write_config(tmpdir, settings):
     """
 
     path = str(tmpdir / "server.conf")
+
     config = configparser.ConfigParser()
     config.read_dict(settings)
     with open(path, "w+") as f:
@@ -55,26 +53,41 @@ def write_config(tmpdir, settings):
     return path
 
 
-@pytest.mark.parametrize(
-    "setting, value, result",
-    (
-            ("allowed_interfaces", "", []),
-            ("allowed_interfaces", "eth0", ["eth0"]),
-            ("allowed_interfaces", "eth1,eth2", ["eth1", "eth2"]),
-            ("additional_images_paths", "", []),
-            ("additional_images_paths", "/path/to/dir1", ["/path/to/dir1"]),
-            ("additional_images_paths", "/path/to/dir1;/path/to/dir2", ["/path/to/dir1", "/path/to/dir2"])
-    )
-)
-def test_server_settings_to_list(tmpdir, setting: str, value: str, result: str):
+def test_get_section_config(tmpdir):
 
     config = load_config(tmpdir, {
         "Server": {
-            setting: value
+            "host": "127.0.0.1",
+        }
+    })
+    assert dict(config.get_section_config("Server")) == {"host": "127.0.0.1"}
+
+
+def test_set_section_config(tmpdir):
+
+    config = load_config(tmpdir, {
+        "Server": {
+            "host": "127.0.0.1",
+            "local": "false"
         }
     })
 
-    assert config.settings.model_dump(exclude_unset=True)["Server"][setting] == result
+    assert dict(config.get_section_config("Server")) == {"host": "127.0.0.1", "local": "false"}
+    config.set_section_config("Server", {"host": "192.168.1.1", "local": True})
+    assert dict(config.get_section_config("Server")) == {"host": "192.168.1.1", "local": "true"}
+
+
+def test_set(tmpdir):
+
+    config = load_config(tmpdir, {
+        "Server": {
+            "host": "127.0.0.1"
+        }
+    })
+
+    assert dict(config.get_section_config("Server")) == {"host": "127.0.0.1"}
+    config.set("Server", "host", "192.168.1.1")
+    assert dict(config.get_section_config("Server")) == {"host": "192.168.1.1"}
 
 
 def test_reload(tmpdir):
@@ -85,7 +98,9 @@ def test_reload(tmpdir):
         }
     })
 
-    assert config.settings.Server.host == "127.0.0.1"
+    assert dict(config.get_section_config("Server")) == {"host": "127.0.0.1"}
+    config.set_section_config("Server", {"host": "192.168.1.1"})
+    assert dict(config.get_section_config("Server")) == {"host": "192.168.1.1"}
 
     write_config(tmpdir, {
         "Server": {
@@ -94,67 +109,4 @@ def test_reload(tmpdir):
     })
 
     config.reload()
-    assert config.settings.Server.host == "192.168.1.2"
-
-
-def test_server_password_hidden():
-
-    server_settings = {"Server": {"compute_password": "password123"}}
-    config = ServerConfig(**server_settings)
-    assert str(config.Server.compute_password) == "**********"
-    assert config.Server.compute_password.get_secret_value() == "password123"
-
-
-@pytest.mark.parametrize(
-    "settings, exception_expected",
-    (
-            ({"protocol": "https1"}, True),
-            ({"console_start_port_range": 15000, "console_end_port_range": 20000}, False),
-            ({"console_start_port_range": 0}, True),
-            ({"console_start_port_range": 68000}, True),
-            ({"console_end_port_range": 15000}, False),
-            ({"console_end_port_range": 0}, True),
-            ({"console_end_port_range": 68000}, True),
-            ({"console_start_port_range": 10000, "console_end_port_range": 5000}, True),
-            ({"vnc_console_start_port_range": 6000}, False),
-            ({"vnc_console_start_port_range": 1000}, True),
-            ({"vnc_console_end_port_range": 6000}, False),
-            ({"vnc_console_end_port_range": 1000}, True),
-            ({"vnc_console_start_port_range": 7000, "vnc_console_end_port_range": 6000}, True),
-            ({"enable_ssl": True, "certfile": "/path/to/certfile", "certkey": "/path/to/certkey"}, True),
-            ({"enable_ssl": True}, True),
-            ({"enable_ssl": True, "certfile": "/path/to/certfile"}, True),
-            ({"enable_ssl": True, "certkey": "/path/to/certkey"}, True)
-    )
-)
-def test_server_settings(settings: dict, exception_expected: bool):
-
-    server_settings = {"Server": settings}
-
-    if exception_expected:
-        with pytest.raises(ValidationError):
-            ServerConfig(**server_settings)
-    else:
-        ServerConfig(**server_settings)
-
-
-@pytest.mark.parametrize(
-    "settings, exception_expected",
-    (
-            ({"vmnet_start_range": 0}, True),
-            ({"vmnet_start_range": 256}, True),
-            ({"vmnet_end_range": 0}, True),
-            ({"vmnet_end_range": 256}, True),
-            ({"vmnet_start_range": 2, "vmnet_end_range": 10}, False),
-            ({"vmnet_start_range": 5, "vmnet_end_range": 3}, True)
-    )
-)
-def test_vmware_settings(settings: dict, exception_expected: bool):
-
-    vmware_settings = {"VMware": settings}
-
-    if exception_expected:
-        with pytest.raises(ValidationError):
-            ServerConfig(**vmware_settings)
-    else:
-        ServerConfig(**vmware_settings)
+    assert dict(config.get_section_config("Server")) == {"host": "192.168.1.1"}

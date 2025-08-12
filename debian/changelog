@@ -1,3 +1,16 @@
+gns3-server (2:2.2.54-1kaisen) kaisen-packages; urgency=medium
+
+  * Revert to 2.x.x release because 3.x.x is unstable for Kaisen
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Tue, 12 Aug 2025 20:27:09 +0200
+
+gns3-server (3.0.5-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the new upstream release
+  * Refresh the add-import-trio-to-fix-sendmsg.patch quilt patch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Fri, 08 Aug 2025 13:08:43 +0200
+
 gns3-server (3.0.2-2kaisen) kaisen-packages; urgency=medium
 
   * Fix bad dependancy

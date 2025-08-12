@@ -17,7 +17,6 @@
 
 import os
 import pytest
-import pytest_asyncio
 from tests.utils import asyncio_patch, AsyncioMagicMock
 
 from gns3server.compute.virtualbox.virtualbox_vm import VirtualBoxVM
@@ -25,7 +24,7 @@ from gns3server.compute.virtualbox.virtualbox_error import VirtualBoxError
 from gns3server.compute.virtualbox import VirtualBox
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def manager(port_manager):
 
     m = VirtualBox.instance()
@@ -33,13 +32,12 @@ async def manager(port_manager):
     return m
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest.fixture(scope="function")
 async def vm(compute_project, manager):
 
     return VirtualBoxVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "test", False)
 
 
-@pytest.mark.asyncio
 async def test_vm(compute_project, manager):
 
     vm = VirtualBoxVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "test", False)
@@ -48,7 +46,6 @@ async def test_vm(compute_project, manager):
     assert vm.vmname == "test"
 
 
-@pytest.mark.asyncio
 async def test_rename_vmname(compute_project, manager):
     """
     Rename a VM is not allowed when using a running linked clone
@@ -78,7 +75,6 @@ async def test_rename_vmname(compute_project, manager):
     assert vm._modify_vm.called
 
 
-@pytest.mark.asyncio
 async def test_vm_valid_virtualbox_api_version(compute_project, manager):
 
     with asyncio_patch("gns3server.compute.virtualbox.VirtualBox.execute", return_value=["API version:  4_3"]):
@@ -87,7 +83,6 @@ async def test_vm_valid_virtualbox_api_version(compute_project, manager):
         await vm.create()
 
 
-@pytest.mark.asyncio
 async def test_vm_invalid_virtualbox_api_version(compute_project, manager):
 
     with asyncio_patch("gns3server.compute.virtualbox.VirtualBox.execute", return_value=["API version:  4_2"]):
@@ -96,7 +91,6 @@ async def test_vm_invalid_virtualbox_api_version(compute_project, manager):
             await vm.create()
 
 
-@pytest.mark.asyncio
 async def test_vm_adapter_add_nio_binding_adapter_not_exist(vm, manager, free_console_port):
 
     nio = manager.create_nio({"type": "nio_udp", "lport": free_console_port, "rport": free_console_port, "rhost": "127.0.0.1"})
@@ -106,10 +100,10 @@ async def test_vm_adapter_add_nio_binding_adapter_not_exist(vm, manager, free_co
 
 def test_json(vm, tmpdir, project):
 
-    assert vm.asdict()["node_directory"] is None
+    assert vm.__json__()["node_directory"] is None
     project._path = str(tmpdir)
     vm._linked_clone = True
-    assert vm.asdict()["node_directory"] is not None
+    assert vm.__json__()["node_directory"] is not None
 
 
 def test_patch_vm_uuid(vm):

@@ -17,6 +17,7 @@
 
 
 class GNS3VMError(Exception):
+
     def __init__(self, message):
         super().__init__(message)
         self._message = message
@@ -25,4 +26,4 @@ class GNS3VMError(Exception):
         return self._message
 
     def __str__(self):
-        return f"GNS3VM: {self._message}"
+        return "GNS3VM: {}".format(self._message)

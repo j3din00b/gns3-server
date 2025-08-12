@@ -20,11 +20,11 @@ import aiohttp
 import asyncio
 import socket
 import json
+import uuid
 import sys
 import io
 
-from fastapi import HTTPException
-from aiohttp import web
+from operator import itemgetter
 
 if sys.version_info >= (3, 11):
     from asyncio import timeout as asynctimeout
@@ -33,22 +33,28 @@ else:
 
 from ..utils import parse_version
 from ..utils.asyncio import locking
-from ..controller.controller_error import (
-    ControllerError,
-    ControllerBadRequestError,
-    ControllerNotFoundError,
-    ControllerForbiddenError,
-    ControllerTimeoutError,
-    ControllerUnauthorizedError,
-    ComputeError,
-    ComputeConflictError
-)
+from ..controller.controller_error import ControllerError
 from ..version import __version__, __version_info__
 
 
 import logging
-
 log = logging.getLogger(__name__)
+
+
+class ComputeError(ControllerError):
+    pass
+
+
+class ComputeConflict(aiohttp.web.HTTPConflict):
+    """
+    Raise when the compute send a 409 that we can handle
+
+    :param response: The response of the compute
+    """
+
+    def __init__(self, response):
+        super().__init__(text=response["message"])
+        self.response = response
 
 
 class Compute:
@@ -56,27 +62,16 @@ class Compute:
     A GNS3 compute.
     """
 
-    def __init__(
-        self,
-        compute_id,
-        controller=None,
-        protocol="http",
-        host="localhost",
-        port=3080,
-        user=None,
-        password=None,
-        name=None,
-        console_host=None,
-        ssl_context=None,
-    ):
+    def __init__(self, compute_id, controller=None, protocol="http", host="localhost",
+                 port=3080, user=None, password=None, name=None, console_host=None, ssl_context=None):
         self._http_session = None
         assert controller is not None
         log.info("Create compute %s", compute_id)
 
-        # if compute_id is None:
-        #     self._id = str(uuid.uuid4())
-        # else:
-        self._id = compute_id
+        if compute_id is None:
+            self._id = str(uuid.uuid4())
+        else:
+            self._id = compute_id
 
         self.protocol = protocol
         self._console_host = console_host
@@ -89,12 +84,14 @@ class Compute:
         self._closed = False  # Close mean we are destroying the compute node
         self._controller = controller
         self._set_auth(user, password)
-        self._cpu_usage_percent = 0
-        self._memory_usage_percent = 0
-        self._disk_usage_percent = 0
+        self._cpu_usage_percent = None
+        self._memory_usage_percent = None
         self._last_error = None
         self._ssl_context = ssl_context
-        self._capabilities = {"version": "", "platform": "", "cpus": 0, "memory": 0, "disk_size": 0, "node_types": []}
+        self._capabilities = {
+            "version": None,
+            "node_types": []
+        }
         self.name = name
         # Cache of interfaces on remote host
         self._interfaces_cache = None
@@ -102,15 +99,20 @@ class Compute:
 
     def _session(self):
         if self._http_session is None or self._http_session.closed is True:
-            connector = aiohttp.TCPConnector(force_close=True, ssl_context=self._ssl_context)
-            self._http_session = aiohttp.ClientSession(connector=connector)
+            self._http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=None,
+                                                                                      force_close=True,
+                                                                                      ssl_context=self._ssl_context))
         return self._http_session
+
+    #def __del__(self):
+    #
+    #   if self._http_session:
+    #       self._http_session.close()
 
     def _set_auth(self, user, password):
         """
         Set authentication parameters
         """
-
         if user is None or len(user.strip()) == 0:
             self._user = None
             self._password = None
@@ -118,9 +120,9 @@ class Compute:
         else:
             self._user = user.strip()
             if password:
-                self._password = password
+                self._password = password.strip()
                 try:
-                    self._auth = aiohttp.BasicAuth(self._user, self._password.get_secret_value(), "utf-8")
+                    self._auth = aiohttp.BasicAuth(self._user, self._password, "utf-8")
                 except ValueError as e:
                     log.error(str(e))
             else:
@@ -145,7 +147,6 @@ class Compute:
         return self._interfaces_cache
 
     async def update(self, **kwargs):
-
         for kw in kwargs:
             if kw not in ("user", "password"):
                 setattr(self, kw, kwargs[kw])
@@ -155,7 +156,7 @@ class Compute:
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
         self._connected = False
-        self._controller.notification.controller_emit("compute.updated", self.asdict())
+        self._controller.notification.controller_emit("compute.updated", self.__json__())
         self._controller.save()
 
     async def close(self):
@@ -179,7 +180,6 @@ class Compute:
 
     @name.setter
     def name(self, name):
-
         if name is not None:
             self._name = name
         else:
@@ -188,9 +188,9 @@ class Compute:
                 # Due to random user generated by 1.4 it's common to have a very long user
                 if len(user) > 14:
                     user = user[:11] + "..."
-                self._name = f"{self._protocol}://{user}@{self._host}:{self._port}"
+                self._name = "{}://{}@{}:{}".format(self._protocol, user, self._host, self._port)
             else:
-                self._name = f"{self._protocol}://{self._host}:{self._port}"
+                self._name = "{}://{}:{}".format(self._protocol, self._host, self._port)
 
     @property
     def connected(self):
@@ -221,7 +221,7 @@ class Compute:
         try:
             return socket.gethostbyname(self._host)
         except socket.gaierror:
-            return "0.0.0.0"
+            return '0.0.0.0'
 
     @host.setter
     def host(self, host):
@@ -279,22 +279,17 @@ class Compute:
     def memory_usage_percent(self):
         return self._memory_usage_percent
 
-    @property
-    def disk_usage_percent(self):
-        return self._disk_usage_percent
-
-    def asdict(self, topology_dump=False):
+    def __json__(self, topology_dump=False):
         """
         :param topology_dump: Filter to keep only properties require for saving on disk
         """
-
         if topology_dump:
             return {
                 "compute_id": self._id,
                 "name": self._name,
                 "protocol": self._protocol,
                 "host": self._host,
-                "port": self._port,
+                "port": self._port
             }
         return {
             "compute_id": self._id,
@@ -306,9 +301,8 @@ class Compute:
             "connected": self._connected,
             "cpu_usage_percent": self._cpu_usage_percent,
             "memory_usage_percent": self._memory_usage_percent,
-            "disk_usage_percent": self._disk_usage_percent,
             "capabilities": self._capabilities,
-            "last_error": self._last_error,
+            "last_error": self._last_error
         }
 
     async def download_file(self, project, path):
@@ -320,10 +314,10 @@ class Compute:
         :returns: A file stream
         """
 
-        url = self._getUrl(f"/projects/{project.id}/files/{path}")
+        url = self._getUrl("/projects/{}/files/{}".format(project.id, path))
         response = await self._session().request("GET", url, auth=self._auth)
         if response.status == 404:
-            raise ControllerNotFoundError(f"{path} not found on compute")
+            raise aiohttp.web.HTTPNotFound(text="File '{}' not found on compute".format(path))
         return response
 
     async def download_image(self, image_type, image):
@@ -335,10 +329,10 @@ class Compute:
         :returns: A file stream
         """
 
-        url = self._getUrl(f"/{image_type}/images/{image}")
+        url = self._getUrl("/{}/images/{}".format(image_type, image))
         response = await self._session().request("GET", url, auth=self._auth)
         if response.status == 404:
-            raise ControllerNotFoundError(f"{image} not found on compute")
+            raise aiohttp.web.HTTPNotFound(text="Image '{}' not found on compute".format(image))
         return response
 
     async def http_query(self, method, path, data=None, dont_connect=False, **kwargs):
@@ -351,7 +345,7 @@ class Compute:
                 await self._controller.gns3vm.start()
             await self.connect()
         if not self._connected and not dont_connect:
-            raise ComputeError(f"Cannot connect to compute '{self._name}' with request {method} {path}")
+            raise ComputeError("Cannot connect to compute '{}' with request {} {}".format(self._name, method, path))
         response = await self._run_http_query(method, path, data=data, **kwargs)
         return response
 
@@ -361,80 +355,75 @@ class Compute:
         """
         try:
             await self.connect()
-        except ControllerError:
+        except aiohttp.web.HTTPConflict:
             pass
 
     @locking
-    async def connect(self, report_failed_connection=False):
+    async def connect(self):
         """
         Check if remote server is accessible
         """
 
         if not self._connected and not self._closed and self.host:
             try:
-                log.info(f"Connecting to compute '{self._id}'")
+                log.info("Connecting to compute '{}'".format(self._id))
                 response = await self._run_http_query("GET", "/capabilities")
             except ComputeError as e:
-                if report_failed_connection:
-                    raise
-                log.warning(f"Cannot connect to compute '{self._id}': {e}")
+                log.warning("Cannot connect to compute '{}': {}".format(self._id, e))
                 # Try to reconnect after 5 seconds if server unavailable only if not during tests (otherwise we create a ressource usage bomb)
                 if not hasattr(sys, "_called_from_test") or not sys._called_from_test:
                     self._connection_failure += 1
                     # After 5 failure we close the project using the compute to avoid sync issues
                     if self._connection_failure == 10:
-                        log.error(f"Could not connect to compute '{self._id}' after multiple attempts: {e}")
+                        log.error("Could not connect to compute '{}' after multiple attempts: {}".format(self._id, e))
                         await self._controller.close_compute_projects(self)
                     asyncio.get_event_loop().call_later(5, lambda: asyncio.ensure_future(self._try_reconnect()))
                 return
-            except web.HTTPNotFound:
-                raise ControllerNotFoundError(f"The server {self._id} is not a GNS3 server or it's a 1.X server")
-            except web.HTTPUnauthorized:
-                raise ControllerUnauthorizedError(f"Invalid auth for server {self._id}")
-            except web.HTTPServiceUnavailable:
-                raise ControllerNotFoundError(f"The server {self._id} is unavailable")
+            except aiohttp.web.HTTPNotFound:
+                raise aiohttp.web.HTTPConflict(text="The server {} is not a GNS3 server or it's a 1.X server".format(self._id))
+            except aiohttp.web.HTTPUnauthorized:
+                raise aiohttp.web.HTTPConflict(text="Invalid auth for server {}".format(self._id))
+            except aiohttp.web.HTTPServiceUnavailable:
+                raise aiohttp.web.HTTPConflict(text="The server {} is unavailable".format(self._id))
             except ValueError:
-                raise ComputeError(f"Invalid server url for server {self._id}")
+                raise aiohttp.web.HTTPConflict(text="Invalid server url for server {}".format(self._id))
 
             if "version" not in response.json:
-                msg = f"The server {self._id} is not a GNS3 server"
+                msg = "The server {} is not a GNS3 server".format(self._id)
                 log.error(msg)
                 await self._http_session.close()
-                raise ControllerNotFoundError(msg)
+                raise aiohttp.web.HTTPConflict(text=msg)
             self._capabilities = response.json
 
-            if response.json["version"].split("+")[0] != __version__.split("+")[0]:
+            if response.json["version"].split("-")[0] != __version__.split("-")[0]:
                 if self._name.startswith("GNS3 VM"):
-                    msg = (
-                        "GNS3 version {} is not the same as the GNS3 VM version {}. Please upgrade the GNS3 VM.".format(
-                            __version__, response.json["version"]
-                        )
-                    )
+                    msg = "GNS3 version {} is not the same as the GNS3 VM version {}. Please upgrade the GNS3 VM.".format(__version__,
+                                                                                                                          response.json["version"])
                 else:
-                    msg = "GNS3 controller version {} is not the same as compute {} version {}".format(
-                        __version__, self._name, response.json["version"]
-                    )
+                    msg = "GNS3 controller version {} is not the same as compute {} version {}".format(__version__,
+                                                                                                       self._name,
+                                                                                                       response.json["version"])
                 if __version_info__[3] == 0:
                     # Stable release
                     log.error(msg)
                     await self._http_session.close()
                     self._last_error = msg
-                    raise ControllerError(msg)
+                    raise aiohttp.web.HTTPConflict(text=msg)
                 elif parse_version(__version__)[:2] != parse_version(response.json["version"])[:2]:
                     # We don't allow different major version to interact even with dev build
                     log.error(msg)
                     await self._http_session.close()
                     self._last_error = msg
-                    raise ControllerError(msg)
+                    raise aiohttp.web.HTTPConflict(text=msg)
                 else:
-                    msg = f"{msg}\nUsing different versions may result in unexpected problems. Please use at your own risk."
+                    msg = "{}\nUsing different versions may result in unexpected problems. Please use at your own risk.".format(msg)
                     self._controller.notification.controller_emit("log.warning", {"message": msg})
 
             self._notifications = asyncio.gather(self._connect_notification())
             self._connected = True
             self._connection_failure = 0
             self._last_error = None
-            self._controller.notification.controller_emit("compute.updated", self.asdict())
+            self._controller.notification.controller_emit("compute.updated", self.__json__())
 
     async def _connect_notification(self):
         """
@@ -444,7 +433,7 @@ class Compute:
         ws_url = self._getUrl("/notifications/ws")
         try:
             async with self._session().ws_connect(ws_url, auth=self._auth, heartbeat=10) as ws:
-                log.info(f"Connected to compute '{self._id}' WebSocket '{ws_url}'")
+                log.info("Connected to compute '{}' WebSocket '{}'".format(self._id, ws_url))
                 async for response in ws:
                     if response.type == aiohttp.WSMsgType.TEXT:
                         msg = json.loads(response.data)
@@ -454,39 +443,31 @@ class Compute:
                         if action == "ping":
                             self._cpu_usage_percent = event["cpu_usage_percent"]
                             self._memory_usage_percent = event["memory_usage_percent"]
-                            self._disk_usage_percent = event["disk_usage_percent"]
-                            # FIXME: slow down number of compute events
-                            self._controller.notification.controller_emit("compute.updated", self.asdict())
+                            #FIXME: slow down number of compute events
+                            self._controller.notification.controller_emit("compute.updated", self.__json__())
                         else:
-                            if action == "log.error":
-                                log.error(event.pop("message"))
-                            await self._controller.notification.dispatch(
-                                action, event, project_id=project_id, compute_id=self.id
-                            )
+                            await self._controller.notification.dispatch(action, event, project_id=project_id, compute_id=self.id)
                     else:
                         if response.type == aiohttp.WSMsgType.CLOSE:
                             await ws.close()
                         elif response.type == aiohttp.WSMsgType.ERROR:
-                            log.error(f"Error received on compute '{self._id}' WebSocket '{ws_url}': {ws.exception()}")
+                            log.error("Error received on compute '{}' WebSocket '{}': {}".format(self._id, ws_url, ws.exception()))
                         elif response.type == aiohttp.WSMsgType.CLOSED:
                             pass
                         break
         except aiohttp.ClientError as e:
-            log.error(f"Client response error received on compute '{self._id}' WebSocket '{ws_url}': {e}")
+            log.error("Client response error received on compute '{}' WebSocket '{}': {}".format(self._id, ws_url,e))
         finally:
             self._connected = False
-            log.info(f"Connection closed to compute '{self._id}' WebSocket '{ws_url}'")
+            log.info("Connection closed to compute '{}' WebSocket '{}'".format(self._id, ws_url))
 
         # Try to reconnect after 1 second if server unavailable only if not during tests (otherwise we create a ressources usage bomb)
-        from gns3server.api.server import app
-        if not app.state.exiting and not hasattr(sys, "_called_from_test"):
-            log.info(f"Reconnecting to compute '{self._id}' WebSocket '{ws_url}'")
+        if not hasattr(sys, "_called_from_test") or not sys._called_from_test:
             asyncio.get_event_loop().call_later(1, lambda: asyncio.ensure_future(self.connect()))
 
         self._cpu_usage_percent = None
         self._memory_usage_percent = None
-        self._disk_usage_percent = None
-        self._controller.notification.controller_emit("compute.updated", self.asdict())
+        self._controller.notification.controller_emit("compute.updated", self.__json__())
 
     def _getUrl(self, path):
         host = self._host
@@ -498,10 +479,10 @@ class Compute:
                 host = str(ipaddress.IPv6Address(host))
                 if host == "::":
                     host = "::1"
-                host = f"[{host}]"
+                host = "[{}]".format(host)
             elif host == "0.0.0.0":
                 host = "127.0.0.1"
-        return f"{self._protocol}://{host}:{self._port}/v3/compute{path}"
+        return "{}://{}:{}/v2/compute{}".format(self._protocol, host, self._port, path)
 
     def get_url(self, path):
         """ Returns URL for specific path at Compute"""
@@ -510,40 +491,32 @@ class Compute:
     async def _run_http_query(self, method, path, data=None, timeout=120, raw=False):
         async with asynctimeout(delay=timeout):
             url = self._getUrl(path)
-            headers = {"content-type": "application/json"}
+            headers = {}
+            headers['content-type'] = 'application/json'
             chunked = None
             if data == {}:
                 data = None
             elif data is not None:
-                if hasattr(data, "asdict"):
-                    data = json.dumps(data.asdict())
+                if hasattr(data, '__json__'):
+                    data = json.dumps(data.__json__())
                 elif isinstance(data, aiohttp.streams.EmptyStreamReader):
                     data = None
                 # Stream the request
                 elif isinstance(data, aiohttp.streams.StreamReader) or isinstance(data, bytes):
                     chunked = True
-                    headers["content-type"] = "application/octet-stream"
+                    headers['content-type'] = 'application/octet-stream'
                 # If the data is an open file we will iterate on it
                 elif isinstance(data, io.BufferedIOBase):
                     chunked = True
-                    headers["content-type"] = "application/octet-stream"
+                    headers['content-type'] = 'application/octet-stream'
                 else:
                     data = json.dumps(data).encode("utf-8")
         try:
-            log.debug(f"Attempting request to compute: {method} {url} {headers}")
-            response = await self._session().request(
-                method, url, headers=headers, data=data, auth=self._auth, chunked=chunked, timeout=timeout
-            )
+            log.debug("Attempting request to compute: {method} {url} {headers}".format(method=method, url=url, headers=headers))
+            response = await self._session().request(method, url, headers=headers, data=data, auth=self._auth, chunked=chunked, timeout=timeout)
         except asyncio.TimeoutError:
-            raise ComputeError(f"Timeout error for {method} call to {url} after {timeout}s")
-        except (
-            aiohttp.ClientError,
-            aiohttp.ServerDisconnectedError,
-            aiohttp.ClientResponseError,
-            ValueError,
-            KeyError,
-            socket.gaierror,
-        ) as e:
+            raise ComputeError("Timeout error for {} call to {} after {}s".format(method, url, timeout))
+        except (aiohttp.ClientError, aiohttp.ServerDisconnectedError, ValueError, KeyError, socket.gaierror) as e:
             #  aiohttp 2.3.1 raises socket.gaierror when cannot find host
             raise ComputeError(str(e))
         body = await response.read()
@@ -561,28 +534,27 @@ class Compute:
                 msg = ""
 
             if response.status == 400:
-                raise ControllerBadRequestError(msg)
+                raise aiohttp.web.HTTPBadRequest(text="Bad request {} {}".format(url, body))
             elif response.status == 401:
-                raise ControllerUnauthorizedError(f"Invalid authentication for compute '{self.name}' [{self.id}]")
+                raise aiohttp.web.HTTPUnauthorized(text="Invalid authentication for compute {}".format(self.id))
             elif response.status == 403:
-                raise ControllerForbiddenError(msg)
+                raise aiohttp.web.HTTPForbidden(text=msg)
             elif response.status == 404:
-                raise ControllerNotFoundError(f"{method} {path} not found")
+                raise aiohttp.web.HTTPNotFound(text="{} {} not found".format(method, path))
             elif response.status == 408 or response.status == 504:
-                raise ControllerTimeoutError(f"{method} {path} request timeout")
+                raise aiohttp.web.HTTPRequestTimeout(text="{} {} request timeout".format(method, path))
             elif response.status == 409:
                 try:
-                    raise ComputeConflictError(url, json.loads(body))
+                    raise ComputeConflict(json.loads(body))
                 # If the 409 doesn't come from a GNS3 server
                 except ValueError:
-                    raise ControllerError(msg)
+                    raise aiohttp.web.HTTPConflict(text=msg)
+            elif response.status == 500:
+                raise aiohttp.web.HTTPInternalServerError(text="Internal server error {}".format(url))
+            elif response.status == 503:
+                raise aiohttp.web.HTTPServiceUnavailable(text="Service unavailable {} {}".format(url, body))
             else:
-                raise HTTPException(
-                    status_code=response.status,
-                    detail=f"HTTP error {response.status} received from compute "
-                           f"'{self.name}' for request {method} {path}: {msg}"
-                )
-
+                raise NotImplementedError("{} status code is not supported for {} '{}'".format(response.status, method, url))
         if body and len(body):
             if raw:
                 response.body = body
@@ -590,14 +562,14 @@ class Compute:
                 try:
                     response.json = json.loads(body)
                 except ValueError:
-                    raise ControllerError(f"The server {self._id} is not a GNS3 server")
+                    raise aiohttp.web.HTTPConflict(text="The server {} is not a GNS3 server".format(self._id))
         else:
             response.json = {}
             response.body = b""
         return response
 
     async def get(self, path, **kwargs):
-        return await self.http_query("GET", path, **kwargs)
+        return (await self.http_query("GET", path, **kwargs))
 
     async def post(self, path, data={}, **kwargs):
         response = await self.http_query("POST", path, data, **kwargs)
@@ -608,24 +580,46 @@ class Compute:
         return response
 
     async def delete(self, path, **kwargs):
-        return await self.http_query("DELETE", path, **kwargs)
+        return (await self.http_query("DELETE", path, **kwargs))
 
     async def forward(self, method, type, path, data=None):
         """
         Forward a call to the emulator on compute
         """
         try:
-            action = f"/{type}/{path}"
+            action = "/{}/{}".format(type, path)
             res = await self.http_query(method, action, data=data, timeout=None)
         except aiohttp.ServerDisconnectedError:
-            raise ControllerError(f"Connection lost to {self._id} during {method} {action}")
+            log.error("Connection lost to %s during %s %s", self._id, method, action)
+            raise aiohttp.web.HTTPGatewayTimeout()
         return res.json
+
+    async def images(self, type):
+        """
+        Return the list of images available for this type on the compute node.
+        """
+        images = []
+
+        res = await self.http_query("GET", "/{}/images".format(type), timeout=None)
+        images = res.json
+
+        try:
+            if type in ["qemu", "dynamips", "iou"]:
+                #for local_image in list_images(type):
+                #    if local_image['filename'] not in [i['filename'] for i in images]:
+                #        images.append(local_image)
+                images = sorted(images, key=itemgetter('filename'))
+            else:
+                images = sorted(images, key=itemgetter('image'))
+        except OSError as e:
+            raise ComputeError("Cannot list images: {}".format(str(e)))
+        return images
 
     async def list_files(self, project):
         """
         List files in the project on computes
         """
-        path = f"/projects/{project.id}/files"
+        path = "/projects/{}/files".format(project.id)
         res = await self.http_query("GET", path, timeout=None)
         return res.json
 
@@ -637,11 +631,11 @@ class Compute:
         :returns: Tuple (ip_for_this_compute, ip_for_other_compute)
         """
         if other_compute == self:
-            return self.host_ip, self.host_ip
+            return (self.host_ip, self.host_ip)
 
         # Perhaps the user has correct network gateway, we trust him
-        if self.host_ip not in ("0.0.0.0", "127.0.0.1") and other_compute.host_ip not in ("0.0.0.0", "127.0.0.1"):
-            return self.host_ip, other_compute.host_ip
+        if (self.host_ip not in ('0.0.0.0', '127.0.0.1') and other_compute.host_ip not in ('0.0.0.0', '127.0.0.1')):
+            return (self.host_ip, other_compute.host_ip)
 
         this_compute_interfaces = await self.interfaces()
         other_compute_interfaces = await other_compute.interfaces()
@@ -649,9 +643,7 @@ class Compute:
         # Sort interface to put the compute host in first position
         # we guess that if user specified this host it could have a reason (VMware Nat / Host only interface)
         this_compute_interfaces = sorted(this_compute_interfaces, key=lambda i: i["ip_address"] != self.host_ip)
-        other_compute_interfaces = sorted(
-            other_compute_interfaces, key=lambda i: i["ip_address"] != other_compute.host_ip
-        )
+        other_compute_interfaces = sorted(other_compute_interfaces, key=lambda i: i["ip_address"] != other_compute.host_ip)
 
         for this_interface in this_compute_interfaces:
             # Skip if no ip or no netmask (vbox when stopped set a null netmask)
@@ -661,9 +653,7 @@ class Compute:
             if this_interface["ip_address"].startswith("169.254."):
                 continue
 
-            this_network = ipaddress.ip_network(
-                "{}/{}".format(this_interface["ip_address"], this_interface["netmask"]), strict=False
-            )
+            this_network = ipaddress.ip_network("{}/{}".format(this_interface["ip_address"], this_interface["netmask"]), strict=False)
 
             for other_interface in other_compute_interfaces:
                 if len(other_interface["ip_address"]) == 0 or other_interface["netmask"] is None:
@@ -673,10 +663,8 @@ class Compute:
                 if other_interface["ip_address"] == this_interface["ip_address"]:
                     continue
 
-                other_network = ipaddress.ip_network(
-                    "{}/{}".format(other_interface["ip_address"], other_interface["netmask"]), strict=False
-                )
+                other_network = ipaddress.ip_network("{}/{}".format(other_interface["ip_address"], other_interface["netmask"]), strict=False)
                 if this_network.overlaps(other_network):
-                    return this_interface["ip_address"], other_interface["ip_address"]
+                    return (this_interface["ip_address"], other_interface["ip_address"])
 
-        raise ValueError(f"No common subnet for compute {self.name} and {other_compute.name}")
+        raise ValueError("No common subnet for compute {} and {}".format(self.name, other_compute.name))

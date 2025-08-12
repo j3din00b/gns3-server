@@ -15,9 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import asyncio
+
 from contextlib import contextmanager
-from gns3server.utils.notification_queue import NotificationQueue
+from ..notification_queue import NotificationQueue
 
 
 class NotificationManager:
@@ -36,13 +36,10 @@ class NotificationManager:
 
         Use it with Python with
         """
-
         queue = NotificationQueue()
         self._listeners.add(queue)
-        try:
-            yield queue
-        finally:
-            self._listeners.remove(queue)
+        yield queue
+        self._listeners.remove(queue)
 
     def emit(self, action, event, **kwargs):
         """
@@ -52,9 +49,8 @@ class NotificationManager:
         :param event: Event to send
         :param kwargs: Add this meta to the notification (project_id for example)
         """
-
         for listener in self._listeners:
-            asyncio.get_running_loop().call_soon_threadsafe(listener.put_nowait, (action, event, kwargs))
+            listener.put_nowait((action, event, kwargs))
 
     @staticmethod
     def reset():
@@ -68,6 +64,6 @@ class NotificationManager:
         :returns: instance of NotificationManager
         """
 
-        if not hasattr(NotificationManager, "_instance") or NotificationManager._instance is None:
+        if not hasattr(NotificationManager, '_instance') or NotificationManager._instance is None:
             NotificationManager._instance = NotificationManager()
         return NotificationManager._instance

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2014 GNS3 Technologies Inc.
 #
@@ -15,7 +16,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-class Adapter:
+class Adapter(object):
 
     """
     Base class for adapters.

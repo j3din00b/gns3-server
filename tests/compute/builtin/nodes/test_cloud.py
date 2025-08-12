@@ -17,7 +17,6 @@
 
 import uuid
 import pytest
-import pytest_asyncio
 from unittest.mock import MagicMock, patch, call
 
 from gns3server.compute.builtin.nodes.cloud import Cloud
@@ -31,7 +30,7 @@ def nio():
     return NIOUDP(4242, "127.0.0.1", 4343)
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def manager():
 
     m = MagicMock()
@@ -39,7 +38,6 @@ async def manager():
     return m
 
 
-@pytest.mark.asyncio
 async def test_json_with_ports(on_gns3vm, compute_project, manager):
 
     ports = [
@@ -51,9 +49,8 @@ async def test_json_with_ports(on_gns3vm, compute_project, manager):
         }
     ]
     cloud = Cloud("cloud1", str(uuid.uuid4()), compute_project, manager, ports=ports)
-    assert cloud.asdict() == {
+    assert cloud.__json__() == {
         "name": "cloud1",
-        "usage": "",
         "node_id": cloud.id,
         "project_id": compute_project.id,
         "remote_console_host": "",
@@ -84,9 +81,8 @@ def test_json_without_ports(on_gns3vm, compute_project, manager):
     """
 
     cloud = Cloud("cloud1", str(uuid.uuid4()), compute_project, manager, ports=None)
-    assert cloud.asdict() == {
+    assert cloud.__json__() == {
         "name": "cloud1",
-        "usage": "",
         "node_id": cloud.id,
         "project_id": compute_project.id,
         "remote_console_host": "",
@@ -117,7 +113,6 @@ def test_json_without_ports(on_gns3vm, compute_project, manager):
     }
 
 
-@pytest.mark.asyncio
 async def test_update_port_mappings(on_gns3vm, compute_project):
     """
     We don't allow an empty interface in the middle of port list
@@ -158,7 +153,6 @@ async def test_update_port_mappings(on_gns3vm, compute_project):
     assert cloud.ports_mapping == ports1
 
 
-@pytest.mark.asyncio
 async def test_linux_ethernet_raw_add_nio(linux_platform, compute_project, nio):
     ports = [
         {
@@ -186,7 +180,6 @@ async def test_linux_ethernet_raw_add_nio(linux_platform, compute_project, nio):
     ])
 
 
-@pytest.mark.asyncio
 async def test_linux_ethernet_raw_add_nio_bridge(linux_platform, compute_project, nio):
     """
     Bridge can't be connected directly to a cloud we use a tap in the middle

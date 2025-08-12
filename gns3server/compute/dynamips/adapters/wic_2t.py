@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2013 GNS3 Technologies Inc.
 #
@@ -15,7 +16,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-class WIC_2T:
+class WIC_2T(object):
 
     """
     WIC-2T Serial

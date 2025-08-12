@@ -18,7 +18,6 @@
 import os
 import sys
 import threading
-import pytest
 from unittest.mock import patch
 
 
@@ -26,7 +25,7 @@ from gns3server.utils import force_unix_path
 from gns3server.utils.images import md5sum, remove_checksum, images_directories, list_images
 
 
-def test_images_directories(tmpdir, config):
+def test_images_directories(tmpdir):
 
     path1 = tmpdir / "images1" / "QEMU" / "test1.bin"
     path1.write("1", ensure=True)
@@ -36,15 +35,17 @@ def test_images_directories(tmpdir, config):
     path2.write("1", ensure=True)
     path2 = force_unix_path(str(path2))
 
-    config.settings.Server.images_path = str(tmpdir / "images1")
-    config.settings.Server.additional_images_paths = "/tmp/null24564;" + str(tmpdir / "images2")
+    with patch("gns3server.config.Config.get_section_config", return_value={
+            "images_path": str(tmpdir / "images1"),
+            "additional_images_path": "/tmp/null24564;{}".format(tmpdir / "images2"),
+            "local": False}):
 
-    # /tmp/null24564 is ignored because doesn't exists
-    res = images_directories("qemu")
-    assert res[0] == force_unix_path(str(tmpdir / "images1" / "QEMU"))
-    assert res[1] == force_unix_path(str(tmpdir / "images2"))
-    assert res[2] == force_unix_path(str(tmpdir / "images1"))
-    assert len(res) == 3
+        # /tmp/null24564 is ignored because doesn't exists
+        res = images_directories("qemu")
+        assert res[0] == force_unix_path(str(tmpdir / "images1" / "QEMU"))
+        assert res[1] == force_unix_path(str(tmpdir / "images2"))
+        assert res[2] == force_unix_path(str(tmpdir / "images1"))
+        assert len(res) == 3
 
 
 def test_md5sum(tmpdir):
@@ -111,8 +112,7 @@ def test_remove_checksum(tmpdir):
     remove_checksum(str(tmpdir / 'not_exists'))
 
 
-@pytest.mark.asyncio
-async def test_list_images(tmpdir, config):
+def test_list_images(tmpdir):
 
     # IOS image in the images directory
     ios_image_1 = tmpdir / "images1" / "IOS" / "ios_image_1.image"
@@ -158,45 +158,47 @@ async def test_list_images(tmpdir, config):
     md5sum_file.write("1", ensure=True)
     md5sum_file = force_unix_path(str(md5sum_file))
 
-    config.settings.Server.images_path = str(tmpdir / "images1")
-    config.settings.Server.additional_images_paths = "/tmp/null24564;" + str(tmpdir / "images2")
+    with patch("gns3server.config.Config.get_section_config", return_value={
+            "images_path": str(tmpdir / "images1"),
+            "additional_images_path": "/tmp/null24564;{}".format(str(tmpdir / "images2")),
+            "local": False}):
 
-    assert sorted(await list_images("dynamips"), key=lambda k: k['filename']) == [
-        {
-            'filename': 'ios_image_1.image',
-            'filesize': 7,
-            'md5sum': 'b0d5aa897d937aced5a6b1046e8f7e2e',
-            'path': 'ios_image_1.image'
-        },
-        {
-            'filename': 'ios_image_2.image',
-            'filesize': 7,
-            'md5sum': 'b0d5aa897d937aced5a6b1046e8f7e2e',
-            'path': str(ios_image_2)
-        }
-    ]
-
-    if sys.platform.startswith("linux"):
-        assert sorted(await list_images("iou"), key=lambda k: k['filename']) == [
+        assert sorted(list_images("dynamips"), key=lambda k: k['filename']) == [
             {
-                'filename': 'iou32.bin',
+                'filename': 'ios_image_1.image',
                 'filesize': 7,
-                'md5sum': 'e573e8f5c93c6c00783f20c7a170aa6c',
-                'path': 'iou32.bin'
+                'md5sum': 'b0d5aa897d937aced5a6b1046e8f7e2e',
+                'path': 'ios_image_1.image'
             },
             {
-                'filename': 'iou64.bin',
+                'filename': 'ios_image_2.image',
                 'filesize': 7,
-                'md5sum': 'c73626d23469519894d58bc98bee9655',
-                'path': 'iou64.bin'
+                'md5sum': 'b0d5aa897d937aced5a6b1046e8f7e2e',
+                'path': str(ios_image_2)
             }
         ]
 
-    assert await list_images("qemu") == [
-        {
-            'filename': 'qemu_image.qcow2',
-            'filesize': 7,
-            'md5sum': 'fcea920f7412b5da7be0cf42b8c93759',
-            'path': 'qemu_image.qcow2'
-        }
-    ]
+        if sys.platform.startswith("linux"):
+            assert sorted(list_images("iou"), key=lambda k: k['filename']) == [
+                {
+                    'filename': 'iou32.bin',
+                    'filesize': 7,
+                    'md5sum': 'e573e8f5c93c6c00783f20c7a170aa6c',
+                    'path': 'iou32.bin'
+                },
+                {
+                    'filename': 'iou64.bin',
+                    'filesize': 7,
+                    'md5sum': 'c73626d23469519894d58bc98bee9655',
+                    'path': 'iou64.bin'
+                },
+            ]
+
+        assert sorted(list_images("qemu"), key=lambda k: k['filename']) == [
+            {
+                'filename': 'qemu_image.qcow2',
+                'filesize': 7,
+                'md5sum': 'fcea920f7412b5da7be0cf42b8c93759',
+                'path': 'qemu_image.qcow2'
+            }
+        ]

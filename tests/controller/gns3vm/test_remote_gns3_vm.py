@@ -19,7 +19,7 @@ import pytest
 
 from gns3server.controller.gns3vm.remote_gns3_vm import RemoteGNS3VM
 from gns3server.controller.gns3vm.gns3_vm_error import GNS3VMError
-from pydantic import SecretStr
+
 
 @pytest.fixture
 def gns3vm(controller):
@@ -27,7 +27,6 @@ def gns3vm(controller):
     return RemoteGNS3VM(controller)
 
 
-@pytest.mark.asyncio
 async def test_list(gns3vm, controller):
 
     await controller.add_compute("r1", name="R1", host="r1.local", connect=False)
@@ -35,7 +34,6 @@ async def test_list(gns3vm, controller):
     assert res == [{"vmname": "R1"}]
 
 
-@pytest.mark.asyncio
 async def test_start(gns3vm, controller):
 
     await controller.add_compute("r1",
@@ -44,7 +42,7 @@ async def test_start(gns3vm, controller):
                                  host="r1.local",
                                  port=8484,
                                  user="hello",
-                                 password=SecretStr("world"),
+                                 password="world",
                                  connect=False)
 
     gns3vm.vmname = "R1"
@@ -54,20 +52,19 @@ async def test_start(gns3vm, controller):
     assert gns3vm.ip_address == "r1.local"
     assert gns3vm.port == 8484
     assert gns3vm.user == "hello"
-    assert gns3vm.password.get_secret_value() == "world"
+    assert gns3vm.password == "world"
 
 
-@pytest.mark.asyncio
 async def test_start_invalid_vm(gns3vm, controller):
 
     await controller.add_compute("r1",
-                                 connect=False,
                                  name="R1",
                                  protocol="https",
                                  host="r1.local",
                                  port=8484,
                                  user="hello",
-                                 password=SecretStr("world"))
+                                 password="world",
+                                 connect=False)
 
     gns3vm.vmname = "R2"
     with pytest.raises(GNS3VMError):

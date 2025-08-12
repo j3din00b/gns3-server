@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -30,7 +31,6 @@ class Device:
     def __init__(self, name, node_id, project, manager, hypervisor=None):
 
         self._name = name
-        self._usage = ""
         self._id = node_id
         self._project = project
         self._manager = manager
@@ -75,26 +75,6 @@ class Device:
         """
 
         self._name = new_name
-
-    @property
-    def usage(self):
-        """
-        Returns the usage for this device.
-
-        :returns: usage
-        """
-
-        return self._usage
-
-    @usage.setter
-    def usage(self, new_usage):
-        """
-        Sets the usage of this device.
-
-        :param new_usage: usage
-        """
-
-        self._usage = new_usage
 
     @property
     def id(self):

@@ -17,7 +17,6 @@
 
 
 import pytest
-import pytest_asyncio
 import tempfile
 import os
 import stat
@@ -29,7 +28,7 @@ from gns3server.compute.virtualbox.virtualbox_error import VirtualBoxError
 from tests.utils import asyncio_patch
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def manager(port_manager):
 
     m = VirtualBox.instance()
@@ -37,43 +36,42 @@ async def manager(port_manager):
     return m
 
 
-def test_vm_invalid_vboxmanage_path(manager, config):
+def test_vm_invalid_vboxmanage_path(manager):
 
-    config.settings.VirtualBox.vboxmanage_path = "/bin/test_fake"
-    with pytest.raises(VirtualBoxError):
-        manager.find_vboxmanage()
+    with patch("gns3server.config.Config.get_section_config", return_value={"vboxmanage_path": "/bin/test_fake"}):
+        with pytest.raises(VirtualBoxError):
+            manager.find_vboxmanage()
 
 
-def test_vm_non_executable_vboxmanage_path(manager, config):
+def test_vm_non_executable_vboxmanage_path(manager):
 
     tmpfile = tempfile.NamedTemporaryFile()
-    config.settings.VirtualBox.vboxmanage_path = tmpfile.name
-    with pytest.raises(VirtualBoxError):
-        manager.find_vboxmanage()
+    with patch("gns3server.config.Config.get_section_config", return_value={"vboxmanage_path": tmpfile.name}):
+        with pytest.raises(VirtualBoxError):
+            manager.find_vboxmanage()
 
 
-def test_vm_invalid_executable_name_vboxmanage_path(manager, config, tmpdir):
+def test_vm_invalid_executable_name_vboxmanage_path(manager, tmpdir):
 
     path = str(tmpdir / "vpcs")
     with open(path, "w+") as f:
         f.write(path)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    config.settings.VirtualBox.vboxmanage_path = path
-    with pytest.raises(VirtualBoxError):
-        manager.find_vboxmanage()
+    with patch("gns3server.config.Config.get_section_config", return_value={"vboxmanage_path": path}):
+        with pytest.raises(VirtualBoxError):
+            manager.find_vboxmanage()
 
 
-def test_vboxmanage_path(manager, config, tmpdir):
+def test_vboxmanage_path(manager, tmpdir):
 
     path = str(tmpdir / "VBoxManage")
     with open(path, "w+") as f:
         f.write(path)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    config.settings.VirtualBox.vboxmanage_path = path
-    assert manager.find_vboxmanage() == path
+    with patch("gns3server.config.Config.get_section_config", return_value={"vboxmanage_path": path}):
+        assert manager.find_vboxmanage() == path
 
 
-@pytest.mark.asyncio
 async def test_list_vms(manager):
 
     vm_list = ['"Windows 8.1" {27b4d095-ff5f-4ac4-bb9d-5f2c7861c1f1}',

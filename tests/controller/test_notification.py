@@ -16,13 +16,12 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
-import pytest_asyncio
 from unittest.mock import MagicMock
 
 from tests.utils import AsyncioMagicMock
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def node(project):
 
     compute = MagicMock()
@@ -34,7 +33,6 @@ async def node(project):
     return await project.add_node(compute, "test", None, node_type="vpcs", properties={"startup_config": "test.cfg"})
 
 
-@pytest.mark.asyncio
 async def test_emit_to_all(controller, project):
     """
     Send an event to all if we don't have a project id in the event
@@ -51,7 +49,6 @@ async def test_emit_to_all(controller, project):
     assert len(notif._project_listeners[project.id]) == 0
 
 
-@pytest.mark.asyncio
 async def test_emit_to_project(controller, project):
     """
     Send an event to a project listeners
@@ -70,7 +67,6 @@ async def test_emit_to_project(controller, project):
     assert len(notif._project_listeners[project.id]) == 0
 
 
-@pytest.mark.asyncio
 async def test_dispatch(controller, project):
 
     notif = controller.notification
@@ -82,7 +78,6 @@ async def test_dispatch(controller, project):
         assert msg == ('test', {}, {})
 
 
-@pytest.mark.asyncio
 async def test_dispatch_ping(controller, project):
 
     notif = controller.notification
@@ -94,7 +89,6 @@ async def test_dispatch_ping(controller, project):
         assert msg == ('ping', {'compute_id': 12}, {})
 
 
-@pytest.mark.asyncio
 async def test_dispatch_node_updated(controller, node, project):
     """
     When we receive a node.updated notification from compute
@@ -126,4 +120,4 @@ def test_various_notification(controller, node):
     notif.project_emit("log.info", {"message": "Image uploaded"})
     notif.project_emit("log.warning", {"message": "Warning ASA 8 is not officially supported by GNS3"})
     notif.project_emit("log.error", {"message": "Permission denied on /tmp"})
-    notif.project_emit("node.updated", node.asdict())
+    notif.project_emit("node.updated", node.__json__())

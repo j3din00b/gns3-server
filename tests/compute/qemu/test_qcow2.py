@@ -66,7 +66,6 @@ def test_invalid_empty_file(tmpdir):
 
 
 @pytest.mark.skipif(qemu_img() is None, reason="qemu-img is not available")
-@pytest.mark.asyncio
 async def test_rebase(tmpdir):
 
     shutil.copy("tests/resources/empty8G.qcow2", str(tmpdir / "empty16G.qcow2"))

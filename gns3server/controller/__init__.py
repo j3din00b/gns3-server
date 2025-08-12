@@ -17,11 +17,11 @@
 
 import os
 import sys
-import uuid
-import shutil
-import asyncio
-import random
 import json
+import uuid
+import socket
+import shutil
+import aiohttp
 
 try:
     import importlib_resources
@@ -31,23 +31,21 @@ except ImportError:
 from ..config import Config
 from ..utils import parse_version, md5sum
 from ..utils.images import default_images_directory
-from ..utils.asyncio import wait_run_in_executor
 
 from .project import Project
+from .template import Template
 from .appliance import Appliance
 from .appliance_manager import ApplianceManager
+from .template_manager import TemplateManager
 from .compute import Compute, ComputeError
 from .notification import Notification
 from .symbols import Symbols
+from ..version import __version__
 from .topology import load_topology
 from .gns3vm import GNS3VM
 from .gns3vm.gns3_vm_error import GNS3VMError
-from .controller_error import ControllerError, ControllerNotFoundError
-from ..db.tasks import update_disk_checksums
-from ..version import __version__
 
 import logging
-
 log = logging.getLogger(__name__)
 
 
@@ -57,32 +55,29 @@ class Controller:
     """
 
     def __init__(self):
-
         self._computes = {}
         self._projects = {}
-        self._ssl_context = None
         self._notification = Notification(self)
         self.gns3vm = GNS3VM(self)
         self.symbols = Symbols()
+        self._ssl_context = None
         self._appliance_manager = ApplianceManager()
-        self._iou_license_settings = {"iourc_content": "", "license_check": False}
-        self._vars_loaded = False
-        self._vars_file = Config.instance().controller_vars
-        log.info(f'Loading controller vars file "{self._vars_file}"')
+        self._template_manager = TemplateManager()
+        self._iou_license_settings = {"iourc_content": "",
+                                      "license_check": True}
+        self._config_loaded = False
+        self._config_file = Config.instance().controller_config
+        log.info("Load controller configuration file {}".format(self._config_file))
 
-    async def start(self, computes=None):
+    async def start(self):
 
         log.info("Controller is starting")
-        await self._install_base_configs()
-        installed_disks = await self._install_builtin_disks()
-        if installed_disks:
-            await update_disk_checksums(installed_disks)
-
-        server_config = Config.instance().settings.Server
+        self._install_base_configs()
+        self._install_builtin_disks()
+        server_config = Config.instance().get_section_config("Server")
         Config.instance().listen_for_config_changes(self._update_config)
-        name = server_config.name
-        host = server_config.host
-        port = server_config.port
+        host = server_config.get("host", "localhost")
+        port = server_config.getint("port", 3080)
 
         # clients will use the IP they use to connect to
         # the controller if console_host is 0.0.0.0
@@ -90,47 +85,36 @@ class Controller:
         if host == "0.0.0.0":
             host = "127.0.0.1"
 
-        await self._load_controller_vars()
+        name = socket.gethostname()
+        if name == "gns3vm":
+            name = "Main server"
 
-        if server_config.enable_ssl:
-            self._ssl_context = self._create_ssl_context(server_config)
-
-        protocol = server_config.protocol.value
+        computes = self._load_controller_settings()
+        from gns3server.web.web_server import WebServer
+        self._ssl_context = WebServer.instance(host=host, port=port).ssl_context()
+        protocol = server_config.get("protocol", "http")
         if self._ssl_context and protocol != "https":
-            log.warning(f"Protocol changed to 'https' for local compute because SSL is enabled")
+            log.warning("Protocol changed to 'https' for local compute because SSL is enabled".format(port))
             protocol = "https"
         try:
-            self._local_server = await self.add_compute(
-                compute_id="local",
-                name=name,
-                protocol=protocol,
-                host=host,
-                console_host=console_host,
-                port=port,
-                user=server_config.compute_username,
-                password=server_config.compute_password,
-                force=True,
-                connect=True,
-                wait_connection=False,
-                ssl_context=self._ssl_context,
-            )
-        except ControllerError:
-            log.fatal(
-                f"Cannot access to the local server, make sure something else is not running on the TCP port {port}"
-            )
+            self._local_server = await self.add_compute(compute_id="local",
+                                                        name=name,
+                                                        protocol=protocol,
+                                                        host=host,
+                                                        console_host=console_host,
+                                                        port=port,
+                                                        user=server_config.get("user", ""),
+                                                        password=server_config.get("password", ""),
+                                                        force=True,
+                                                        ssl_context=self._ssl_context)
+        except aiohttp.web.HTTPConflict:
+            log.fatal("Cannot access to the local server, make sure something else is not running on the TCP port {}".format(port))
             sys.exit(1)
-
-        if computes:
-            for c in computes:
-                try:
-                    #FIXME: Task exception was never retrieved
-                    await self.add_compute(
-                        compute_id=str(c.compute_id),
-                        connect=False,
-                        **c.dict(exclude_unset=True, exclude={"compute_id", "created_at", "updated_at"}),
-                    )
-                except (ControllerError, KeyError):
-                    pass  # Skip not available servers at loading
+        for c in computes:
+            try:
+                await self.add_compute(**c)
+            except (aiohttp.web.HTTPError, KeyError):
+                pass  # Skip not available servers at loading
 
         try:
             await self.gns3vm.auto_start_vm()
@@ -138,26 +122,7 @@ class Controller:
             log.warning(str(e))
 
         await self.load_projects()
-
-        # start to auto open projects (if configured) 5 seconds after the controller has started
-        asyncio.get_event_loop().call_later(5, asyncio.create_task, self._project_auto_open())
-
-    def _create_ssl_context(self, server_config):
-
-        import ssl
-
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-        certfile = server_config.certfile
-        certkey = server_config.certkey
-        try:
-            ssl_context.load_cert_chain(certfile, certkey)
-        except FileNotFoundError:
-            log.critical("Could not find the SSL certfile or certkey")
-            raise SystemExit
-        except ssl.SSLError as e:
-            log.critical(f"SSL error: {e}")
-            raise SystemExit
-        return ssl_context
+        await self._project_auto_open()
 
     def ssl_context(self):
         """
@@ -172,8 +137,9 @@ class Controller:
         """
 
         if self._local_server:
-            self._local_server.user = Config.instance().settings.Server.compute_username
-            self._local_server.password = Config.instance().settings.Server.compute_password
+            server_config = Config.instance().get_section_config("Server")
+            self._local_server.user = server_config.get("user")
+            self._local_server.password = server_config.get("password")
 
     async def stop(self):
 
@@ -184,17 +150,17 @@ class Controller:
             try:
                 await compute.close()
             # We don't care if a compute is down at this step
-            except (ComputeError, ControllerError, OSError):
+            except (ComputeError, aiohttp.web.HTTPError, OSError):
                 pass
         await self.gns3vm.exit_vm()
-        self.save()
+        #self.save()
         self._computes = {}
         self._projects = {}
 
     async def reload(self):
 
         log.info("Controller is reloading")
-        await self._load_controller_vars()
+        self._load_controller_settings()
 
         # remove all projects deleted from disk.
         for project in self._projects.copy().values():
@@ -204,97 +170,111 @@ class Controller:
                 self.remove_project(project)
 
         await self.load_projects()
+        await self._project_auto_open()
+
+    def check_can_write_config(self):
+        """
+        Check if the controller configuration can be written on disk
+
+        :returns: boolean
+        """
+
+        try:
+            os.makedirs(os.path.dirname(self._config_file), exist_ok=True)
+            if not os.access(self._config_file, os.W_OK):
+                raise aiohttp.web.HTTPConflict(text="Change rejected, cannot write to controller configuration file '{}'".format(self._config_file))
+        except OSError as e:
+            raise aiohttp.web.HTTPConflict(text="Change rejected: {}".format(e))
 
     def save(self):
         """
-        Save the controller vars on disk
+        Save the controller configuration on disk
         """
 
-        controller_vars = dict()
-        if self._vars_loaded:
-            controller_vars = {
-                "appliances_etag": self._appliance_manager.appliances_etag,
-                "iou_license_check": self._iou_license_settings["license_check"],
-                "version": __version__
-            }
+        controller_settings = dict()
+        if self._config_loaded:
+            controller_settings = {"computes": [],
+                                   "templates": [],
+                                   "gns3vm": self.gns3vm.__json__(),
+                                   "iou_license": self._iou_license_settings,
+                                   "appliances_etag": self._appliance_manager.appliances_etag,
+                                   "version": __version__}
 
-            if self._iou_license_settings["iourc_content"]:
+            for template in self._template_manager.templates.values():
+                if not template.builtin:
+                    controller_settings["templates"].append(template.__json__())
 
-                server_config = Config.instance().settings.Server
-                os.makedirs(server_config.secrets_dir, exist_ok=True)
-                iourc_path = os.path.join(server_config.secrets_dir, "iou_license")
-
-                try:
-                    with open(iourc_path, "w+") as f:
-                        f.write(self._iou_license_settings["iourc_content"])
-                    log.info(f"iourc file '{iourc_path}' saved")
-                except OSError as e:
-                    log.error(f"Cannot write IOU license file '{iourc_path}': {e}")
+            for compute in self._computes.values():
+                if compute.id != "local" and compute.id != "vm":
+                    controller_settings["computes"].append({"host": compute.host,
+                                                            "name": compute.name,
+                                                            "port": compute.port,
+                                                            "protocol": compute.protocol,
+                                                            "user": compute.user,
+                                                            "password": compute.password,
+                                                            "compute_id": compute.id})
 
         try:
-            os.makedirs(os.path.dirname(self._vars_file), exist_ok=True)
-            with open(self._vars_file, 'w+') as f:
-                json.dump(controller_vars, f, indent=4)
+            os.makedirs(os.path.dirname(self._config_file), exist_ok=True)
+            with open(self._config_file, 'w+') as f:
+                json.dump(controller_settings, f, indent=4)
         except OSError as e:
-            log.error(f"Cannot write controller vars file '{self._vars_file}': {e}")
+            log.error("Cannot write controller configuration file '{}': {}".format(self._config_file, e))
 
-    async def _load_controller_vars(self):
+    def _load_controller_settings(self):
         """
-        Reload the controller vars from disk
+        Reload the controller configuration from disk
         """
 
         try:
-            if not os.path.exists(self._vars_file):
-                self.save()  # this will create the vars file
-            with open(self._vars_file) as f:
-                controller_vars = json.load(f)
+            if not os.path.exists(self._config_file):
+                self.save()  # this will create the config file
+            with open(self._config_file) as f:
+                controller_settings = json.load(f)
         except (OSError, ValueError) as e:
-            log.critical(f"Cannot load controller vars file '{self._vars_file}': {e}")
+            log.critical("Cannot load configuration file '{}': {}".format(self._config_file, e))
             return []
 
+        # load GNS3 VM settings
+        if "gns3vm" in controller_settings:
+            gns3_vm_settings = controller_settings["gns3vm"]
+            if "port" not in gns3_vm_settings:
+                # port setting was added in version 2.2.8
+                # the default port was 3080 before this
+                gns3_vm_settings["port"] = 3080
+            self.gns3vm.settings = gns3_vm_settings
+
         # load the IOU license settings
-        server_config = Config.instance().settings.Server
-
-        if not server_config.secrets_dir:
-            server_config.secrets_dir = os.path.dirname(Config.instance().server_config)
-        iourc_path = os.path.join(server_config.secrets_dir, "iou_license")
-
-        if os.path.exists(iourc_path):
-            try:
-                with open(iourc_path) as f:
-                    self._iou_license_settings["iourc_content"] = f.read()
-                log.info(f"iourc file '{iourc_path}' loaded")
-            except OSError as e:
-                log.error(f"Cannot read IOU license file '{iourc_path}': {e}")
-
-        # IOU license check is disabled by default
-        self._iou_license_settings["license_check"] = controller_vars.get("iou_license_check", False)
-        log.info("IOU license check is {} on the controller".format("enabled" if self._iou_license_settings["license_check"] else "disabled"))
+        if "iou_license" in controller_settings:
+            self._iou_license_settings = controller_settings["iou_license"]
 
         # install the built-in appliances if needed
-        if Config.instance().settings.Server.install_builtin_appliances:
-            previous_version = controller_vars.get("version")
+        server_config = Config.instance().get_section_config("Server")
+        if server_config.getboolean("install_builtin_appliances", True):
+            previous_version = controller_settings.get("version")
             log.info("Comparing controller version {} with config version {}".format(__version__, previous_version))
             builtin_appliances_path = self._appliance_manager.builtin_appliances_path()
             if not previous_version or \
                     parse_version(__version__.split("+")[0]) > parse_version(previous_version.split("+")[0]):
-                await self._appliance_manager.install_builtin_appliances()
+                self._appliance_manager.install_builtin_appliances()
             elif not os.listdir(builtin_appliances_path):
-                await self._appliance_manager.install_builtin_appliances()
+                self._appliance_manager.install_builtin_appliances()
             else:
-                log.info(f"Built-in appliances are installed in '{builtin_appliances_path}'")
+                log.info("Built-in appliances are installed in '{}'".format(builtin_appliances_path))
 
-        self._appliance_manager.appliances_etag = controller_vars.get("appliances_etag")
+        self._appliance_manager.appliances_etag = controller_settings.get("appliances_etag")
         self._appliance_manager.load_appliances()
-        self._vars_loaded = True
+        self._template_manager.load_templates(controller_settings.get("templates"))
+        self._config_loaded = True
+        return controller_settings.get("computes", [])
 
     async def load_projects(self):
         """
         Preload the list of projects from disk
         """
 
-        server_config = Config.instance().settings.Server
-        projects_path = os.path.expanduser(server_config.projects_path)
+        server_config = Config.instance().get_section_config("Server")
+        projects_path = os.path.expanduser(server_config.get("projects_path", "~/GNS3/projects"))
         os.makedirs(projects_path, exist_ok=True)
         try:
             for project_path in os.listdir(projects_path):
@@ -304,28 +284,25 @@ class Controller:
                         if file.endswith(".gns3"):
                             try:
                                 await self.load_project(os.path.join(project_dir, file), load=False)
-                            except (ControllerError, NotImplementedError):
+                            except (aiohttp.web.HTTPConflict, aiohttp.web.HTTPNotFound, NotImplementedError):
                                 pass  # Skip not compatible projects
         except OSError as e:
             log.error(str(e))
 
 
     @staticmethod
-    async def install_resource_files(dst_path, resource_name, upgrade_resources=True):
+    def install_resource_files(dst_path, resource_name, upgrade_resources=True):
         """
         Install files from resources to user's file system
         """
 
-        installed_resources = []
-        async def should_copy(src, dst, upgrade_resources):
+        def should_copy(src, dst, upgrade_resources):
             if not os.path.exists(dst):
                 return True
             if upgrade_resources is False:
                 return False
             # copy the resource if it is different
-            src_md5 = await wait_run_in_executor(md5sum, src)
-            dst_md5 = await wait_run_in_executor(md5sum, dst)
-            return src_md5 != dst_md5
+            return md5sum(src) != md5sum(dst)
 
         if hasattr(sys, "frozen") and sys.platform.startswith("win"):
             resource_path = os.path.normpath(os.path.join(os.path.dirname(sys.executable), resource_name))
@@ -335,16 +312,14 @@ class Controller:
         else:
             for entry in importlib_resources.files('gns3server').joinpath(resource_name).iterdir():
                 full_path = os.path.join(dst_path, entry.name)
-                if entry.is_file() and await should_copy(str(entry), full_path, upgrade_resources):
+                if entry.is_file() and should_copy(str(entry), full_path, upgrade_resources):
                     log.debug(f'Installing {resource_name} resource file "{entry.name}" to "{full_path}"')
-                    shutil.copy(str(entry), os.path.join(full_path))
-                    installed_resources.append(full_path)
+                    shutil.copy(str(entry), os.path.join(dst_path, entry.name))
                 elif entry.is_dir():
                     os.makedirs(full_path, exist_ok=True)
-                    await Controller.install_resource_files(full_path, os.path.join(resource_name, entry.name))
-        return installed_resources
+                    Controller.install_resource_files(full_path, os.path.join(resource_name, entry.name))
 
-    async def _install_base_configs(self):
+    def _install_base_configs(self):
         """
         At startup we copy base configs to the user location to allow
         them to customize it
@@ -353,12 +328,11 @@ class Controller:
         dst_path = self.configs_path()
         log.info(f"Installing base configs in '{dst_path}'")
         try:
-            # do not overwrite base configs because they may have been customized by the user
-            await Controller.install_resource_files(dst_path, "configs", upgrade_resources=False)
+            Controller.install_resource_files(dst_path, "configs", upgrade_resources=False)
         except OSError as e:
             log.error(f"Could not install base config files to {dst_path}: {e}")
 
-    async def _install_builtin_disks(self):
+    def _install_builtin_disks(self):
         """
         At startup we copy built-in Qemu disks to the user location to allow
         them to use with appliances
@@ -367,7 +341,7 @@ class Controller:
         dst_path = self.disks_path()
         log.info(f"Installing built-in disks in '{dst_path}'")
         try:
-            return await Controller.install_resource_files(dst_path, "disks")
+            Controller.install_resource_files(dst_path, "disks", upgrade_resources=False)
         except OSError as e:
             log.error(f"Could not install disk files to {dst_path}: {e}")
 
@@ -376,8 +350,8 @@ class Controller:
         Get the image storage directory
         """
 
-        server_config = Config.instance().settings.Server
-        images_path = os.path.expanduser(server_config.images_path)
+        server_config = Config.instance().get_section_config("Server")
+        images_path = os.path.expanduser(server_config.get("images_path", "~/GNS3/images"))
         os.makedirs(images_path, exist_ok=True)
         return images_path
 
@@ -386,8 +360,8 @@ class Controller:
         Get the configs storage directory
         """
 
-        server_config = Config.instance().settings.Server
-        configs_path = os.path.expanduser(server_config.configs_path)
+        server_config = Config.instance().get_section_config("Server")
+        configs_path = os.path.expanduser(server_config.get("configs_path", "~/GNS3/configs"))
         os.makedirs(configs_path, exist_ok=True)
         return configs_path
 
@@ -400,7 +374,7 @@ class Controller:
         os.makedirs(disks_path, exist_ok=True)
         return disks_path
 
-    async def add_compute(self, compute_id=None, name=None, force=False, connect=True, wait_connection=True, **kwargs):
+    async def add_compute(self, compute_id=None, name=None, force=False, connect=True, **kwargs):
         """
         Add a server to the dictionary of computes controlled by this controller
 
@@ -414,32 +388,29 @@ class Controller:
         if compute_id not in self._computes:
 
             # We disallow to create from the outside the local and VM server
-            if (compute_id == "local" or compute_id == "vm") and not force:
+            if (compute_id == 'local' or compute_id == 'vm') and not force:
                 return None
 
             # It seem we have error with a gns3vm imported as a remote server and conflict
             # with GNS3 VM settings. That's why we ignore server name gns3vm
-            if name == "gns3vm":
+            if name == 'gns3vm':
                 return None
 
             for compute in self._computes.values():
                 if name and compute.name == name and not force:
-                    raise ControllerError(f'Compute name "{name}" already exists')
+                    raise aiohttp.web.HTTPConflict(text='Compute name "{}" already exists'.format(name))
 
             compute = Compute(compute_id=compute_id, controller=self, name=name, **kwargs)
             self._computes[compute.id] = compute
+            self.save()
             if connect:
-                if wait_connection:
-                    await compute.connect()
-                else:
-                    # call compute.connect() later to give time to the controller to be fully started
-                    asyncio.get_event_loop().call_later(1, lambda: asyncio.ensure_future(compute.connect()))
-            self.notification.controller_emit("compute.created", compute.asdict())
+                await compute.connect()
+            self.notification.controller_emit("compute.created", compute.__json__())
             return compute
         else:
             if connect:
                 await self._computes[compute_id].connect()
-            self.notification.controller_emit("compute.updated", self._computes[compute_id].asdict())
+            self.notification.controller_emit("compute.updated", self._computes[compute_id].__json__())
             return self._computes[compute_id]
 
     async def close_compute_projects(self, compute):
@@ -472,12 +443,13 @@ class Controller:
 
         try:
             compute = self.get_compute(compute_id)
-        except ControllerNotFoundError:
+        except aiohttp.web.HTTPNotFound:
             return
         await self.close_compute_projects(compute)
         await compute.close()
         del self._computes[compute_id]
-        self.notification.controller_emit("compute.deleted", compute.asdict())
+        self.save()
+        self.notification.controller_emit("compute.deleted", compute.__json__())
 
     @property
     def notification(self):
@@ -500,23 +472,12 @@ class Controller:
         Returns a compute or raise a 404 error.
         """
 
-        if compute_id is None:
-            # get all connected computes
-            computes = [compute for compute in self._computes.values() if compute.connected is True]
-            if len(computes) == 1:
-                # return the only available compute
-                return computes[0]
-            else:
-                # randomly pick a compute until we have proper scalability handling
-                # https://github.com/GNS3/gns3-server/issues/1676
-                return random.choice(computes)
-
         try:
             return self._computes[compute_id]
         except KeyError:
             if compute_id == "vm":
-                raise ControllerNotFoundError("Cannot use a node on the GNS3 VM server with the GNS3 VM not configured")
-            raise ControllerNotFoundError(f"Compute ID {compute_id} doesn't exist")
+                raise aiohttp.web.HTTPNotFound(text="Cannot use a node on the GNS3 VM server with the GNS3 VM not configured")
+            raise aiohttp.web.HTTPNotFound(text="Compute ID {} doesn't exist".format(compute_id))
 
     def has_compute(self, compute_id):
         """
@@ -538,9 +499,9 @@ class Controller:
             for project in self._projects.values():
                 if name and project.name == name:
                     if path and path == project.path:
-                        raise ControllerError(f'Project "{name}" already exists in location "{path}"')
+                        raise aiohttp.web.HTTPConflict(text='Project "{}" already exists in location "{}"'.format(name, path))
                     else:
-                        raise ControllerError(f'Project "{name}" already exists')
+                        raise aiohttp.web.HTTPConflict(text='Project "{}" already exists'.format(name))
             project = Project(project_id=project_id, controller=self, name=name, path=path, **kwargs)
             self._projects[project.id] = project
             return self._projects[project.id]
@@ -554,7 +515,7 @@ class Controller:
         try:
             return self._projects[project_id]
         except KeyError:
-            raise ControllerNotFoundError(f"Project ID {project_id} doesn't exist")
+            raise aiohttp.web.HTTPNotFound(text="Project ID {} doesn't exist".format(project_id))
 
     async def get_loaded_project(self, project_id):
         """
@@ -580,9 +541,6 @@ class Controller:
         :param load: Load the topology
         """
 
-        if not os.path.exists(path):
-            raise ControllerError(f"'{path}' does not exist on the controller")
-
         topo_data = load_topology(path)
         topo_data.pop("topology")
         topo_data.pop("version")
@@ -592,12 +550,7 @@ class Controller:
         if topo_data["project_id"] in self._projects:
             project = self._projects[topo_data["project_id"]]
         else:
-            project = await self.add_project(
-                path=os.path.dirname(path),
-                status="closed",
-                filename=os.path.basename(path),
-                **topo_data
-            )
+            project = await self.add_project(path=os.path.dirname(path), status="closed", filename=os.path.basename(path), **topo_data)
         if load or project.auto_open:
             await project.open()
         return project
@@ -607,12 +560,9 @@ class Controller:
         Auto open the project with auto open enable
         """
 
-        try:
-            for project in self._projects.values():
-                if project.auto_open:
-                    await project.open()
-        except ControllerError as e:
-            log.error(f"Could not auto open projects: {e}")
+        for project in self._projects.values():
+            if project.auto_open:
+                await project.open()
 
     def get_free_project_name(self, base_name):
         """
@@ -627,12 +577,12 @@ class Controller:
         projects_path = self.projects_directory()
 
         while True:
-            new_name = f"{base_name}-{i}"
+            new_name = "{}-{}".format(base_name, i)
             if new_name not in names and not os.path.exists(os.path.join(projects_path, new_name)):
                 break
             i += 1
             if i > 1000000:
-                raise ControllerError("A project name could not be allocated (node limit reached?)")
+                raise aiohttp.web.HTTPConflict(text="A project name could not be allocated (node limit reached?)")
         return new_name
 
     @property
@@ -652,6 +602,14 @@ class Controller:
         return self._appliance_manager
 
     @property
+    def template_manager(self):
+        """
+        :returns: Template Manager instance
+        """
+
+        return self._template_manager
+
+    @property
     def iou_license(self):
         """
         :returns: The dictionary of IOU license settings
@@ -661,8 +619,8 @@ class Controller:
 
     def projects_directory(self):
 
-        server_config = Config.instance().settings.Server
-        return os.path.expanduser(server_config.projects_path)
+        server_config = Config.instance().get_section_config("Server")
+        return os.path.expanduser(server_config.get("projects_path", "~/GNS3/projects"))
 
     @staticmethod
     def instance():
@@ -672,7 +630,7 @@ class Controller:
         :returns: instance of Controller
         """
 
-        if not hasattr(Controller, "_instance") or Controller._instance is None:
+        if not hasattr(Controller, '_instance') or Controller._instance is None:
             Controller._instance = Controller()
         return Controller._instance
 
@@ -692,10 +650,19 @@ class Controller:
                 await project.delete()
                 self.remove_project(project)
         project = await self.add_project(name="AUTOIDLEPC")
-        node = await project.add_node(
-            compute, "AUTOIDLEPC", str(uuid.uuid4()), node_type="dynamips", platform=platform, image=image, ram=ram
-        )
+        node = await project.add_node(compute, "AUTOIDLEPC", str(uuid.uuid4()), node_type="dynamips", platform=platform, image=image, ram=ram)
         res = await node.dynamips_auto_idlepc()
         await project.delete()
         self.remove_project(project)
         return res
+
+    async def compute_ports(self, compute_id):
+        """
+        Get the ports used by a compute.
+
+        :param compute_id: ID of the compute
+        """
+
+        compute = self.get_compute(compute_id)
+        response = await compute.get("/network/ports")
+        return response.json

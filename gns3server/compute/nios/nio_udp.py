@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2013 GNS3 Technologies Inc.
 #
@@ -72,11 +73,9 @@ class NIOUDP(NIO):
 
         return "NIO UDP"
 
-    def asdict(self):
+    def __json__(self):
 
-        return {
-            "type": "nio_udp",
-            "lport": self._lport,
-            "rport": self._rport,
-            "rhost": self._rhost
-        }
+        return {"type": "nio_udp",
+                "lport": self._lport,
+                "rport": self._rport,
+                "rhost": self._rhost}

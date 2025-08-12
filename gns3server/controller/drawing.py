@@ -27,7 +27,6 @@ from gns3server.utils.picture import get_size
 
 
 import logging
-
 log = logging.getLogger(__name__)
 
 
@@ -75,9 +74,7 @@ class Drawing:
                         return data.decode()
                     except UnicodeError:
                         width, height, filetype = get_size(data)
-                        return '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" height="{height}" width="{width}">\n<image height="{height}" width="{width}" xlink:href="data:image/{filetype};base64,{b64}" />\n</svg>'.format(
-                            b64=base64.b64encode(data).decode(), filetype=filetype, width=width, height=height
-                        )
+                        return "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" height=\"{height}\" width=\"{width}\">\n<image height=\"{height}\" width=\"{width}\" xlink:href=\"data:image/{filetype};base64,{b64}\" />\n</svg>".format(b64=base64.b64encode(data).decode(), filetype=filetype, width=width, height=height)
             except OSError:
                 log.warning("Image file %s missing", filename)
                 return "<svg></svg>"
@@ -99,11 +96,11 @@ class Drawing:
         try:
             root = ET.fromstring(value)
         except ET.ParseError as e:
-            log.error(f"Can't parse SVG: {e}")
+            log.error("Can't parse SVG: {}".format(e))
             return
         # SVG is the default namespace no need to prefix it
-        ET.register_namespace("xmlns", "http://www.w3.org/2000/svg")
-        ET.register_namespace("xmlns:xlink", "http://www.w3.org/1999/xlink")
+        ET.register_namespace('xmlns', "http://www.w3.org/2000/svg")
+        ET.register_namespace('xmlns:xlink', "http://www.w3.org/1999/xlink")
 
         if len(root.findall("{http://www.w3.org/2000/svg}image")) == 1:
             href = "{http://www.w3.org/1999/xlink}href"
@@ -193,17 +190,16 @@ class Drawing:
                     # To avoid spamming client with large data we don't send the svg if the SVG didn't change
                     svg_changed = True
                 setattr(self, prop, kwargs[prop])
-        data = self.asdict()
+        data = self.__json__()
         if not svg_changed:
             del data["svg"]
         self._project.emit_notification("drawing.updated", data)
         self._project.dump()
 
-    def asdict(self, topology_dump=False):
+    def __json__(self, topology_dump=False):
         """
         :param topology_dump: Filter to keep only properties require for saving on disk
         """
-
         if topology_dump:
             return {
                 "drawing_id": self._id,
@@ -212,7 +208,7 @@ class Drawing:
                 "z": self._z,
                 "locked": self._locked,
                 "rotation": self._rotation,
-                "svg": self._svg,
+                "svg": self._svg
             }
         return {
             "project_id": self._project.id,
@@ -222,8 +218,8 @@ class Drawing:
             "z": self._z,
             "locked": self._locked,
             "rotation": self._rotation,
-            "svg": self.svg,
+            "svg": self.svg
         }
 
     def __repr__(self):
-        return f"<gns3server.controller.Drawing {self._id}>"
+        return "<gns3server.controller.Drawing {}>".format(self._id)

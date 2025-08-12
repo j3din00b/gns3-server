@@ -19,7 +19,7 @@
 import os
 import json
 import pytest
-import pytest_asyncio
+import aiohttp
 import zipfile
 import stat
 
@@ -31,10 +31,9 @@ from tests.utils import AsyncioMagicMock, AsyncioBytesIO
 from gns3server.controller.project import Project
 from gns3server.controller.export_project import export_project, _is_exportable
 from gns3server.utils.asyncio import aiozipstream
-from gns3server.controller.controller_error import ControllerError
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def project(controller):
 
     p = Project(controller=controller, name="test")
@@ -42,7 +41,7 @@ async def project(controller):
     return p
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def node(controller, project):
 
     compute = MagicMock()
@@ -56,7 +55,6 @@ async def node(controller, project):
     return node
 
 
-@pytest.mark.asyncio
 async def write_file(path, z):
 
     with open(path, 'wb') as f:
@@ -75,7 +73,6 @@ def test_exportable_files():
     assert not _is_exportable("test/project-files/snapshots/test.gns3p")
 
 
-@pytest.mark.asyncio
 async def test_export(tmpdir, project):
 
     path = project.path
@@ -149,7 +146,6 @@ async def test_export(tmpdir, project):
             assert topo["computes"] == []
 
 
-# @pytest.mark.asyncio
 # async def test_export_vm(tmpdir, project):
 #     """
 #     If data is on a remote server export it locally before
@@ -187,7 +183,6 @@ async def test_export(tmpdir, project):
 #             assert content == b"HELLO"
 
 
-@pytest.mark.asyncio
 async def test_export_disallow_running(tmpdir, project, node):
     """
     Disallow export when a node is running
@@ -209,12 +204,11 @@ async def test_export_disallow_running(tmpdir, project, node):
         json.dump(topology, f)
 
     node._status = "started"
-    with pytest.raises(ControllerError):
+    with pytest.raises(aiohttp.web.HTTPConflict):
         with aiozipstream.ZipFile() as z:
             await export_project(z, project, str(tmpdir))
 
 
-@pytest.mark.asyncio
 async def test_export_disallow_some_type(tmpdir, project):
     """
     Disallow export for some node type
@@ -235,7 +229,7 @@ async def test_export_disallow_some_type(tmpdir, project):
     with open(os.path.join(path, "test.gns3"), 'w+') as f:
         json.dump(topology, f)
 
-    with pytest.raises(ControllerError):
+    with pytest.raises(aiohttp.web.HTTPConflict):
         with aiozipstream.ZipFile() as z:
             await export_project(z, project, str(tmpdir))
     with aiozipstream.ZipFile() as z:
@@ -256,12 +250,11 @@ async def test_export_disallow_some_type(tmpdir, project):
     }
     with open(os.path.join(path, "test.gns3"), 'w+') as f:
         json.dump(topology, f)
-    with pytest.raises(ControllerError):
+    with pytest.raises(aiohttp.web.HTTPConflict):
         with aiozipstream.ZipFile() as z:
             await export_project(z, project, str(tmpdir), allow_all_nodes=True)
 
 
-@pytest.mark.asyncio
 async def test_export_fix_path(tmpdir, project):
     """
     Fix absolute image path, except for Docker
@@ -303,7 +296,6 @@ async def test_export_fix_path(tmpdir, project):
     assert topology["topology"]["nodes"][1]["properties"]["image"] == "gns3/webterm:lastest"
 
 
-@pytest.mark.asyncio
 async def test_export_with_images(tmpdir, project):
     """
     Fix absolute image path
@@ -339,7 +331,6 @@ async def test_export_with_images(tmpdir, project):
         myzip.getinfo("images/IOS/test.image")
 
 
-@pytest.mark.asyncio
 async def test_export_keep_compute_ids(tmpdir, project):
     """
     If we want to restore the same computes we could ask to keep them
@@ -379,7 +370,6 @@ async def test_export_keep_compute_ids(tmpdir, project):
             assert len(topo["computes"]) == 1
 
 
-@pytest.mark.asyncio
 async def test_export_images_from_vm(tmpdir, project):
     """
     If data is on a remote server export it locally before
@@ -444,7 +434,6 @@ async def test_export_images_from_vm(tmpdir, project):
             assert content == b"IMAGE"
 
 
-@pytest.mark.asyncio
 async def test_export_with_ignoring_snapshots(tmpdir, project):
 
     with open(os.path.join(project.path, "test.gns3"), 'w+') as f:

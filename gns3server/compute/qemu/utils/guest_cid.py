@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2017 GNS3 Technologies Inc.
 #
@@ -17,7 +18,6 @@
 from ..qemu_error import QemuError
 
 import logging
-
 log = logging.getLogger(__name__)
 
 
@@ -30,7 +30,7 @@ def get_next_guest_cid(nodes):
     :return: integer first free cid
     """
 
-    used = {n.guest_cid for n in nodes}
+    used = set([n.guest_cid for n in nodes])
     pool = set(range(3, 65535))
     try:
         return (pool - used).pop()

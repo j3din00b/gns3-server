@@ -18,7 +18,6 @@
 from collections import OrderedDict
 
 import pytest
-import pytest_asyncio
 
 from tests.utils import asyncio_patch, AsyncioMagicMock
 
@@ -29,7 +28,7 @@ from gns3server.compute.vpcs import VPCS
 from gns3server.compute.nios.nio_udp import NIOUDP
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest.fixture(scope="function")
 async def manager(port_manager):
 
     m = VPCS.instance()
@@ -78,7 +77,6 @@ def test_console_vnc_invalid(compute_project, manager):
         node.console = 2012
 
 
-@pytest.mark.asyncio
 async def test_close(node, port_manager):
 
     assert node.console is not None
@@ -104,7 +102,7 @@ def test_aux(compute_project, manager, port_manager):
     aux = port_manager.get_free_tcp_port(compute_project)
     port_manager.release_tcp_port(aux, compute_project)
 
-    node = DockerVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "ubuntu", aux=aux, aux_type="telnet")
+    node = DockerVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "ubuntu", aux=aux)
     assert node.aux == aux
     node.aux = None
     assert node.aux is None
@@ -116,13 +114,12 @@ def test_allocate_aux(compute_project, manager):
     assert node.aux is None
 
     # Docker has an aux port by default
-    node = DockerVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "ubuntu", aux_type="telnet")
+    node = DockerVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "ubuntu")
     assert node.aux is not None
 
 
-def test_change_aux_port(compute_project, manager, port_manager):
+def test_change_aux_port(node, port_manager):
 
-    node = DockerVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, "ubuntu", aux_type="telnet")
     port1 = port_manager.get_free_tcp_port(node.project)
     port2 = port_manager.get_free_tcp_port(node.project)
     port_manager.release_tcp_port(port1, node.project)
@@ -133,7 +130,6 @@ def test_change_aux_port(compute_project, manager, port_manager):
     port_manager.reserve_tcp_port(port1, node.project)
 
 
-@pytest.mark.asyncio
 async def test_update_ubridge_udp_connection(node):
 
     filters = {
@@ -148,7 +144,6 @@ async def test_update_ubridge_udp_connection(node):
     mock.assert_called_with("VPCS-10", filters)
 
 
-@pytest.mark.asyncio
 async def test_ubridge_apply_filters(node):
 
     filters = OrderedDict((
@@ -161,7 +156,6 @@ async def test_ubridge_apply_filters(node):
     node._ubridge_send.assert_any_call("bridge add_packet_filter VPCS-10 filter0 latency 10")
 
 
-@pytest.mark.asyncio
 async def test_ubridge_apply_bpf_filters(node):
 
     filters = {

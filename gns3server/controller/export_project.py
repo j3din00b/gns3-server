@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (C) 2020 GNS3 Technologies Inc.
+# Copyright (C) 2016 GNS3 Technologies Inc.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,30 +20,19 @@ import sys
 import json
 import asyncio
 import aiofiles
+import aiohttp
 import zipfile
 import tempfile
-
-from .controller_error import ControllerError, ControllerNotFoundError, ControllerTimeoutError
 
 from datetime import datetime
 
 import logging
-
 log = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1024 * 8  # 8KB
 
 
-async def export_project(
-    zstream,
-    project,
-    temporary_dir,
-    include_images=False,
-    include_snapshots=False,
-    keep_compute_ids=False,
-    allow_all_nodes=False,
-    reset_mac_addresses=False,
-):
+async def export_project(zstream, project, temporary_dir, include_images=False, include_snapshots=False, keep_compute_ids=False, allow_all_nodes=False, reset_mac_addresses=False):
     """
     Export a project to a zip file.
 
@@ -55,34 +44,25 @@ async def export_project(
     :param temporary_dir: A temporary dir where to store intermediate data
     :param include_images: save OS images to the zip file
     :param include_snapshots: save snapshots to the zip file
-    :param keep_compute_ids: If false replace all compute IDs by local (standard behavior for .gns3project to make it portable)
+    :param keep_compute_ids: If false replace all compute IDs y local (standard behavior for .gns3project to make it portable)
     :param allow_all_nodes: Allow all nodes type to be included in the zip even if not portable
     :param reset_mac_addresses: Reset MAC addresses for each node.
     """
 
     # To avoid issue with data not saved we disallow the export of a running project
     if project.is_running():
-        raise ControllerError("Project must be stopped in order to export it")
+        raise aiohttp.web.HTTPConflict(text="Project must be stopped in order to export it")
 
     # Make sure we save the project
     project.dump()
 
     if not os.path.exists(project._path):
-        raise ControllerNotFoundError(f"Project could not be found at '{project._path}'")
+        raise aiohttp.web.HTTPNotFound(text="Project could not be found at '{}'".format(project._path))
 
     # First we process the .gns3 in order to be sure we don't have an error
     for file in os.listdir(project._path):
         if file.endswith(".gns3"):
-            await _patch_project_file(
-                project,
-                os.path.join(project._path, file),
-                zstream,
-                include_images,
-                keep_compute_ids,
-                allow_all_nodes,
-                temporary_dir,
-                reset_mac_addresses,
-            )
+            await _patch_project_file(project, os.path.join(project._path, file), zstream, include_images, keep_compute_ids, allow_all_nodes, temporary_dir, reset_mac_addresses)
 
     # Export the local files
     for root, dirs, files in os.walk(project._path, topdown=True, followlinks=False):
@@ -95,7 +75,7 @@ async def export_project(
                         # check if we can export the file
                         open(path).close()
                     except OSError as e:
-                        msg = f"Could not export file {path}: {e}"
+                        msg = "Could not export file {}: {}".format(path, e)
                         log.warning(msg)
                         project.emit_notification("log.warning", {"message": msg})
                         continue
@@ -110,7 +90,7 @@ async def export_project(
                 if not os.listdir(path):
                     zstream.write(path, os.path.relpath(path, project._path))
         except FileNotFoundError as e:
-            log.warning(f"Cannot export local file: {e}")
+            log.warning("Cannot export local file: {}".format(e))
             continue
 
     # Export files from remote computes
@@ -122,21 +102,15 @@ async def export_project(
                     log.debug("Downloading file '{}' from compute '{}'".format(compute_file["path"], compute.id))
                     response = await compute.download_file(project, compute_file["path"])
                     if response.status != 200:
-                        log.warning(
-                            f"Cannot export file from compute '{compute.id}'. Compute returned status code {response.status}."
-                        )
+                        log.warning("Cannot export file from compute '{}'. Compute returned status code {}.".format(compute.id, response.status))
                         continue
                     (fd, temp_path) = tempfile.mkstemp(dir=temporary_dir)
-                    async with aiofiles.open(fd, "wb") as f:
+                    async with aiofiles.open(fd, 'wb') as f:
                         while True:
                             try:
                                 data = await response.content.read(CHUNK_SIZE)
                             except asyncio.TimeoutError:
-                                raise ControllerTimeoutError(
-                                    "Timeout when downloading file '{}' from remote compute {}:{}".format(
-                                        compute_file["path"], compute.host, compute.port
-                                    )
-                                )
+                                raise aiohttp.web.HTTPRequestTimeout(text="Timeout when downloading file '{}' from remote compute {}:{}".format(compute_file["path"], compute.host, compute.port))
                             if not data:
                                 break
                             await f.write(data)
@@ -188,14 +162,12 @@ def _is_exportable(path, include_snapshots=False):
 
     # do not export log files and OS noise
     filename = os.path.basename(path)
-    if filename.endswith("_log.txt") or filename.endswith(".log") or filename == ".DS_Store":
+    if filename.endswith('_log.txt') or filename.endswith('.log') or filename == '.DS_Store':
         return False
     return True
 
 
-async def _patch_project_file(
-    project, path, zstream, include_images, keep_compute_ids, allow_all_nodes, temporary_dir, reset_mac_addresses
-):
+async def _patch_project_file(project, path, zstream, include_images, keep_compute_ids, allow_all_nodes, temporary_dir, reset_mac_addresses):
     """
     Patch a project file (.gns3) to export a project.
     The .gns3 file is renamed to project.gns3
@@ -210,21 +182,17 @@ async def _patch_project_file(
         with open(path) as f:
             topology = json.load(f)
     except (OSError, ValueError) as e:
-        raise ControllerError(f"Project file '{path}' cannot be read: {e}")
+        raise aiohttp.web.HTTPConflict(text="Project file '{}' cannot be read: {}".format(path, e))
 
     if "topology" in topology:
         if "nodes" in topology["topology"]:
             for node in topology["topology"]["nodes"]:
-                compute_id = node.get("compute_id", "local")
+                compute_id = node.get('compute_id', 'local')
 
                 if node["node_type"] == "virtualbox" and node.get("properties", {}).get("linked_clone"):
-                    raise ControllerError(
-                        "Projects with a linked {} clone node cannot not be exported. Please use Qemu instead.".format(
-                            node["node_type"]
-                        )
-                    )
+                    raise aiohttp.web.HTTPConflict(text="Projects with a linked {} clone node cannot not be exported. Please use Qemu instead.".format(node["node_type"]))
                 if not allow_all_nodes and node["node_type"] in ["virtualbox", "vmware"]:
-                    raise ControllerError("Projects with a {} node cannot be exported".format(node["node_type"]))
+                    raise aiohttp.web.HTTPConflict(text="Projects with a {} node cannot be exported".format(node["node_type"]))
 
                 if not keep_compute_ids:
                     node["compute_id"] = "local"  # To make project portable all node by default run on local
@@ -244,26 +212,30 @@ async def _patch_project_file(
                                 continue
                         elif not prop.endswith("image"):
                             continue
-                        if value is None or value.strip() == "":
+                        if value is None or value.strip() == '':
                             continue
 
                         if not keep_compute_ids:  # If we keep the original compute we can keep the image path
                             node["properties"][prop] = os.path.basename(value)
 
                         if include_images is True:
-                            images.append({"compute_id": compute_id, "image": value, "image_type": node["node_type"]})
+                            images.append({
+                                'compute_id': compute_id,
+                                'image': value,
+                                'image_type': node['node_type']
+                            })
 
         if not keep_compute_ids:
-            topology["topology"][
-                "computes"
-            ] = []  # Strip compute information because could contain secret info like password
+            topology["topology"]["computes"] = []  # Strip compute information because could contain secret info like password
 
-    local_images = {i["image"] for i in images if i["compute_id"] == "local"}
+    local_images = set([i['image'] for i in images if i['compute_id'] == 'local'])
 
     for image in local_images:
         _export_local_image(image, zstream)
 
-    remote_images = {(i["compute_id"], i["image_type"], i["image"]) for i in images if i["compute_id"] != "local"}
+    remote_images = set([
+        (i['compute_id'], i['image_type'], i['image'])
+        for i in images if i['compute_id'] != 'local'])
 
     for compute_id, image_type, image in remote_images:
         await _export_remote_images(project, compute_id, image_type, image, zstream, temporary_dir)
@@ -281,7 +253,6 @@ def _export_local_image(image, zstream):
     """
 
     from ..compute import MODULES
-
     for module in MODULES:
         try:
             images_directory = module.instance().get_images_directory()
@@ -307,27 +278,23 @@ async def _export_remote_images(project, compute_id, image_type, image, project_
     Export specific image from remote compute.
     """
 
-    log.debug(f"Downloading image '{image}' from compute '{compute_id}'")
+    log.debug("Downloading image '{}' from compute '{}'".format(image, compute_id))
     try:
         compute = [compute for compute in project.computes if compute.id == compute_id][0]
     except IndexError:
-        raise ControllerNotFoundError(f"Cannot export image from '{compute_id}' compute. Compute doesn't exist.")
+        raise aiohttp.web.HTTPConflict(text="Cannot export image from '{}' compute. Compute doesn't exist.".format(compute_id))
 
     response = await compute.download_image(image_type, image)
     if response.status != 200:
-        raise ControllerError(
-            f"Cannot export image from compute '{compute_id}'. Compute returned status code {response.status}."
-        )
+        raise aiohttp.web.HTTPConflict(text="Cannot export image from compute '{}'. Compute returned status code {}.".format(compute_id, response.status))
 
     (fd, temp_path) = tempfile.mkstemp(dir=temporary_dir)
-    async with aiofiles.open(fd, "wb") as f:
+    async with aiofiles.open(fd, 'wb') as f:
         while True:
             try:
                 data = await response.content.read(CHUNK_SIZE)
             except asyncio.TimeoutError:
-                raise ControllerTimeoutError(
-                    f"Timeout when downloading image '{image}' from remote compute {compute.host}:{compute.port}"
-                )
+                raise aiohttp.web.HTTPRequestTimeout(text="Timeout when downloading image '{}' from remote compute {}:{}".format(image, compute.host, compute.port))
             if not data:
                 break
             await f.write(data)

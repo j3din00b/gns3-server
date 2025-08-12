@@ -15,17 +15,23 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import sys
 import asyncio
 
-from gns3server.utils.asyncio import wait_for_file_creation
+from gns3server.utils.asyncio import wait_for_file_creation, wait_for_named_pipe_creation
 from gns3server.compute.error import NodeError
 
 """
-This module handle connection to unix socket
+This module handle connection to unix socket or Windows named pipe
 """
+if sys.platform.startswith("win"):
+    import win32file
+    import win32pipe
+    import msvcrt
 
 
 class SerialReaderWriterProtocol(asyncio.Protocol):
+
     def __init__(self):
         self._output = asyncio.StreamReader()
         self._closed = False
@@ -56,6 +62,50 @@ class SerialReaderWriterProtocol(asyncio.Protocol):
         self._output.feed_eof()
 
 
+class WindowsPipe:
+    """
+    Write input and output stream to the same object
+    """
+
+    def __init__(self, path):
+        self._handle = open(path, "a+b")
+        self._pipe = msvcrt.get_osfhandle(self._handle.fileno())
+
+    async def read(self, n=-1):
+        (read, num_avail, num_message) = win32pipe.PeekNamedPipe(self._pipe, 0)
+        if num_avail > 0:
+            (error_code, output) = win32file.ReadFile(self._pipe, num_avail, None)
+            return output
+        await asyncio.sleep(0.01)
+        return b""
+
+    def at_eof(self):
+        return False
+
+    def write(self, data):
+        win32file.WriteFile(self._pipe, data)
+
+    async def drain(self):
+        return
+
+    def close(self):
+        pass
+
+
+async def _asyncio_open_serial_windows(path):
+    """
+    Open a windows named pipe
+
+    :returns: An IO like object
+    """
+
+    try:
+        await wait_for_named_pipe_creation(path)
+    except asyncio.TimeoutError:
+        raise NodeError('Pipe file "{}" is missing'.format(path))
+    return WindowsPipe(path)
+
+
 async def _asyncio_open_serial_unix(path):
     """
     Open a unix socket or a windows named pipe
@@ -67,21 +117,24 @@ async def _asyncio_open_serial_unix(path):
         # wait for VM to create the pipe file.
         await wait_for_file_creation(path)
     except asyncio.TimeoutError:
-        raise NodeError(f'Pipe file "{path}" is missing')
+        raise NodeError('Pipe file "{}" is missing'.format(path))
 
     output = SerialReaderWriterProtocol()
     try:
         await asyncio.get_event_loop().create_unix_connection(lambda: output, path)
     except ConnectionRefusedError:
-        raise NodeError(f'Can\'t open pipe file "{path}"')
+        raise NodeError('Can\'t open pipe file "{}"'.format(path))
     return output
 
 
 async def asyncio_open_serial(path):
     """
-    Open an unix socket
+    Open a unix socket or a windows named pipe
 
     :returns: An IO like object
     """
 
-    return await _asyncio_open_serial_unix(path)
+    if sys.platform.startswith("win"):
+        return (await _asyncio_open_serial_windows(path))
+    else:
+        return (await _asyncio_open_serial_unix(path))

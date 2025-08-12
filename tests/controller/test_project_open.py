@@ -15,9 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
+
 import json
 import pytest
+import aiohttp
 
 from tests.utils import asyncio_patch
 
@@ -145,8 +146,7 @@ def demo_topology():
     }
 
 
-# @pytest.mark.asyncio
-#async def test_load_project(controller, tmpdir, demo_topology, http_client):
+# async def test_load_project(controller, tmpdir, demo_topology, http_client):
 #
 #     with open(str(tmpdir / "demo.gns3"), "w+") as f:
 #         json.dump(demo_topology, f)
@@ -170,8 +170,7 @@ def demo_topology():
 #     assert project.scene_width == 700
 
 
-@pytest.mark.asyncio
-async def test_open(controller, projects_dir):
+async def test_open(controller, tmpdir):
 
     simple_topology = {
         "auto_close": True,
@@ -192,12 +191,12 @@ async def test_open(controller, projects_dir):
         "version": "2.0.0"
     }
 
-    with open(os.path.join(projects_dir, "demo.gns3"), "w+") as f:
+    with open(str(tmpdir / "demo.gns3"), "w+") as f:
         json.dump(simple_topology, f)
 
     project = Project(name="demo",
                       project_id="64ba8408-afbf-4b66-9cdd-1fd854427478",
-                      path=str(projects_dir),
+                      path=str(tmpdir),
                       controller=controller,
                       filename="demo.gns3",
                       status="closed")
@@ -209,8 +208,7 @@ async def test_open(controller, projects_dir):
     assert project.scene_width == 700
 
 
-# @pytest.mark.asyncio
-#async def test_open_missing_compute(controller, tmpdir, demo_topology, http_client):
+# async def test_open_missing_compute(controller, tmpdir, demo_topology, http_client):
 #     """
 #     If a compute is missing the project should not be open and the .gns3 should
 #     be the one before opening the project

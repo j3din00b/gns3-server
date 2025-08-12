@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2013 GNS3 Technologies Inc.
 #
@@ -19,7 +20,7 @@ Base interface for NIOs.
 """
 
 
-class NIO:
+class NIO(object):
 
     """
     IOU NIO.

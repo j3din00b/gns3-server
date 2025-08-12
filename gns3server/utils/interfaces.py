@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2014 GNS3 Technologies Inc.
 #
@@ -17,20 +18,18 @@
 
 import os
 import sys
+import aiohttp
 import socket
 import struct
 import psutil
 
-from gns3server.compute.compute_error import ComputeError
+from .windows_service import check_windows_service_is_running
 from gns3server.config import Config
 
 if psutil.version_info < (3, 0, 0):
-    raise Exception(
-        "psutil version should >= 3.0.0. If you are under Ubuntu/Debian install gns3 via apt instead of pip"
-    )
+    raise Exception("psutil version should >= 3.0.0. If you are under Ubuntu/Debian install gns3 via apt instead of pip")
 
 import logging
-
 log = logging.getLogger(__name__)
 
 
@@ -47,13 +46,10 @@ def _get_windows_interfaces_from_registry():
             hkeycard = winreg.OpenKey(hkey, network_card_id)
             guid, _ = winreg.QueryValueEx(hkeycard, "ServiceName")
             netcard, _ = winreg.QueryValueEx(hkeycard, "Description")
-            connection = (
-                r"SYSTEM\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}"
-                + fr"\{guid}\Connection"
-            )
+            connection = r"SYSTEM\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}" + r"\{}\Connection".format(guid)
             hkeycon = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, connection)
             name, _ = winreg.QueryValueEx(hkeycon, "Name")
-            interface = fr"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{guid}"
+            interface = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{}".format(guid)
             hkeyinterface = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, interface)
             is_dhcp_enabled, _ = winreg.QueryValueEx(hkeyinterface, "EnableDHCP")
             if is_dhcp_enabled:
@@ -66,23 +62,19 @@ def _get_windows_interfaces_from_registry():
                     # get the first IPv4 address only
                     ip_address = ip_address[0]
             npf_interface = "\\Device\\NPF_{guid}".format(guid=guid)
-            interfaces.append(
-                {
-                    "id": npf_interface,
-                    "name": name,
-                    "ip_address": ip_address,
-                    "mac_address": "",  # TODO: find MAC address in registry
-                    "netcard": netcard,
-                    "netmask": netmask,
-                    "type": "ethernet",
-                }
-            )
+            interfaces.append({"id": npf_interface,
+                               "name": name,
+                               "ip_address": ip_address,
+                               "mac_address": "",  # TODO: find MAC address in registry
+                               "netcard": netcard,
+                               "netmask": netmask,
+                               "type": "ethernet"})
             winreg.CloseKey(hkeyinterface)
             winreg.CloseKey(hkeycon)
             winreg.CloseKey(hkeycard)
         winreg.CloseKey(hkey)
     except OSError as e:
-        log.error(f"could not read registry information: {e}")
+        log.error("could not read registry information: {}".format(e))
 
     return interfaces
 
@@ -116,17 +108,13 @@ def get_windows_interfaces():
                             netmask = network_config.IPSubnet[0]
                         break
                 npf_interface = "\\Device\\NPF_{guid}".format(guid=adapter.GUID)
-                interfaces.append(
-                    {
-                        "id": npf_interface,
-                        "name": adapter.NetConnectionID,
-                        "ip_address": ip_address,
-                        "mac_address": adapter.MACAddress,
-                        "netcard": adapter.name,
-                        "netmask": netmask,
-                        "type": "ethernet",
-                    }
-                )
+                interfaces.append({"id": npf_interface,
+                                   "name": adapter.NetConnectionID,
+                                   "ip_address": ip_address,
+                                   "mac_address": adapter.MACAddress,
+                                   "netcard": adapter.name,
+                                   "netmask": netmask,
+                                   "type": "ethernet"})
     except (AttributeError, pywintypes.com_error):
         log.warning("Could not use the COM service to retrieve interface info, trying using the registry...")
         return _get_windows_interfaces_from_registry()
@@ -165,17 +153,16 @@ def is_interface_up(interface):
             return False
 
         import fcntl
-
         SIOCGIFFLAGS = 0x8913
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                result = fcntl.ioctl(s.fileno(), SIOCGIFFLAGS, interface + "\0" * 256)
-                (flags,) = struct.unpack("H", result[16:18])
+                result = fcntl.ioctl(s.fileno(), SIOCGIFFLAGS, interface + '\0' * 256)
+                flags, = struct.unpack('H', result[16:18])
                 if flags & 1:  # check if the up bit is set
                     return True
             return False
         except OSError as e:
-            raise ComputeError(f"Exception when checking if {interface} is up: {e}")
+            raise aiohttp.web.HTTPInternalServerError(text="Exception when checking if {} is up: {}".format(interface, e))
     else:
         # TODO: Windows & OSX support
         return True
@@ -196,59 +183,61 @@ def interfaces():
     """
 
     results = []
-    allowed_interfaces = Config.instance().settings.Server.allowed_interfaces
-    net_if_addrs = psutil.net_if_addrs()
-    for interface in sorted(net_if_addrs.keys()):
-        if allowed_interfaces and interface not in allowed_interfaces and not interface.startswith("gns3tap"):
-            log.warning(f"Interface '{interface}' is not allowed to be used on this server")
-            continue
-        ip_address = ""
-        mac_address = ""
-        netmask = ""
-        interface_type = "ethernet"
-        for addr in net_if_addrs[interface]:
-            # get the first available IPv4 address only
-            if addr.family == socket.AF_INET:
-                ip_address = addr.address
-                netmask = addr.netmask
-            if addr.family == psutil.AF_LINK:
-                mac_address = addr.address
-        if interface.startswith("tap"):
-            # found no way to reliably detect a TAP interface
-            interface_type = "tap"
-        results.append(
-            {
-                "id": interface,
-                "name": interface,
-                "ip_address": ip_address,
-                "netmask": netmask,
-                "mac_address": mac_address,
-                "type": interface_type,
-            }
-        )
+    if not sys.platform.startswith("win"):
+        allowed_interfaces = Config.instance().get_section_config("Server").get("allowed_interfaces", None)
+        if allowed_interfaces:
+            allowed_interfaces = allowed_interfaces.split(',')
+        net_if_addrs = psutil.net_if_addrs()
+        for interface in sorted(net_if_addrs.keys()):
+            if allowed_interfaces and interface not in allowed_interfaces and not interface.startswith("gns3tap"):
+                log.warning("Interface '{}' is not allowed to be used on this server".format(interface))
+                continue
+            ip_address = ""
+            mac_address = ""
+            netmask = ""
+            interface_type = "ethernet"
+            for addr in net_if_addrs[interface]:
+                # get the first available IPv4 address only
+                if addr.family == socket.AF_INET:
+                    ip_address = addr.address
+                    netmask = addr.netmask
+                if addr.family == psutil.AF_LINK:
+                    mac_address = addr.address
+            if interface.startswith("tap"):
+                # found no way to reliably detect a TAP interface
+                interface_type = "tap"
+            results.append({"id": interface,
+                            "name": interface,
+                            "ip_address": ip_address,
+                            "netmask": netmask,
+                            "mac_address": mac_address,
+                            "type": interface_type})
+    else:
+        try:
+            service_installed = True
+            if not check_windows_service_is_running("npf") and not check_windows_service_is_running("npcap"):
+                service_installed = False
+            else:
+                results = get_windows_interfaces()
+        except ImportError:
+            message = "pywin32 module is not installed, please install it on the server to get the available interface names"
+            raise aiohttp.web.HTTPInternalServerError(text=message)
+        except Exception as e:
+            log.error("uncaught exception {type}".format(type=type(e)), exc_info=1)
+            raise aiohttp.web.HTTPInternalServerError(text="uncaught exception: {}".format(e))
+
+        if service_installed is False:
+            raise aiohttp.web.HTTPInternalServerError(text="The Winpcap or Npcap is not installed or running")
 
     # This interface have special behavior
     for result in results:
         result["special"] = False
-        for special_interface in (
-            "lo",
-            "vmnet",
-            "vboxnet",
-            "docker",
-            "lxcbr",
-            "virbr",
-            "ovs-system",
-            "veth",
-            "fw",
-            "p2p",
-            "bridge",
-            "vmware",
-            "virtualbox",
-            "gns3",
-        ):
+        for special_interface in ("lo", "vmnet", "vboxnet", "docker", "lxcbr",
+                                  "virbr", "ovs-system", "veth", "fw", "p2p",
+                                  "bridge", "vmware", "virtualbox", "gns3"):
             if result["name"].lower().startswith(special_interface):
                 result["special"] = True
-        for special_interface in "-nic":
+        for special_interface in ("-nic"):
             if result["name"].lower().endswith(special_interface):
                 result["special"] = True
     return results

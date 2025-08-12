@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2014 GNS3 Technologies Inc.
 #
@@ -22,6 +23,7 @@ from .port import Port
 
 
 class SerialPort(Port):
+
     @staticmethod
     def long_name_type():
         """
@@ -60,4 +62,6 @@ class SerialPort(Port):
         :return: dictionary
         """
 
-        return {"Frame Relay": "DLT_FRELAY", "Cisco HDLC": "DLT_C_HDLC", "Cisco PPP": "DLT_PPP_SERIAL"}
+        return {"Frame Relay": "DLT_FRELAY",
+                "Cisco HDLC": "DLT_C_HDLC",
+                "Cisco PPP": "DLT_PPP_SERIAL"}

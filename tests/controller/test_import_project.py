@@ -15,13 +15,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import pytest
 import os
 import uuid
 import json
 import zipfile
 
-from pathlib import Path
 from tests.utils import asyncio_patch, AsyncioMagicMock
 from unittest.mock import patch, MagicMock
 
@@ -32,7 +30,6 @@ from gns3server.controller.import_project import import_project, _move_files_to_
 from gns3server.version import __version__
 
 
-@pytest.mark.asyncio
 async def test_import_project(tmpdir, controller):
 
     project_id = str(uuid.uuid4())
@@ -78,14 +75,12 @@ async def test_import_project(tmpdir, controller):
     assert project.name != "test"
 
 
-@pytest.mark.asyncio
-async def test_import_project_override(projects_dir, controller):
+async def test_import_project_override(tmpdir, controller):
     """
     In the case of snapshot we will import a project for
     override the previous keeping the same project id & location
     """
 
-    tmpdir = Path(projects_dir)
     project_id = str(uuid.uuid4())
     topology = {
         "project_id": project_id,
@@ -122,7 +117,6 @@ async def write_file(path, z):
             f.write(chunk)
 
 
-@pytest.mark.asyncio
 async def test_import_project_containing_symlink(tmpdir, controller):
 
     project = Project(controller=controller, name="test")
@@ -164,7 +158,6 @@ async def test_import_project_containing_symlink(tmpdir, controller):
     assert os.readlink(symlink_path) == symlink_target
 
 
-@pytest.mark.asyncio
 async def test_import_upgrade(tmpdir, controller):
     """
     Topology made for previous GNS3 version are upgraded during the process
@@ -194,8 +187,7 @@ async def test_import_upgrade(tmpdir, controller):
         assert topo["version"] == __version__
 
 
-@pytest.mark.asyncio
-async def test_import_with_images(config, tmpdir, controller):
+async def test_import_with_images(tmpdir, controller):
 
     project_id = str(uuid.uuid4())
     topology = {
@@ -222,11 +214,10 @@ async def test_import_with_images(config, tmpdir, controller):
 
     assert not os.path.exists(os.path.join(project.path, "images/IOS/test.image"))
 
-    path = os.path.join(config.settings.Server.images_path, "IOS", "test.image")
+    path = os.path.join(project._config().get("images_path"), "IOS", "test.image")
     assert os.path.exists(path), path
 
 
-@pytest.mark.asyncio
 async def test_import_iou_linux_no_vm(linux_platform, tmpdir, controller):
     """
     On non linux host IOU should be local if we don't have a GNS3 VM
@@ -271,7 +262,6 @@ async def test_import_iou_linux_no_vm(linux_platform, tmpdir, controller):
         assert topo["topology"]["nodes"][0]["compute_id"] == "local"
 
 
-@pytest.mark.asyncio
 async def test_import_iou_linux_with_vm(linux_platform, tmpdir, controller):
     """
     On non linux host IOU should be vm if we have a GNS3 VM configured
@@ -317,7 +307,6 @@ async def test_import_iou_linux_with_vm(linux_platform, tmpdir, controller):
         assert topo["topology"]["nodes"][0]["compute_id"] == "vm"
 
 
-@pytest.mark.asyncio
 async def test_import_nat_non_linux(windows_platform, tmpdir, controller):
     """
     On non linux host NAT should be moved to the GNS3 VM
@@ -363,7 +352,6 @@ async def test_import_nat_non_linux(windows_platform, tmpdir, controller):
         assert topo["topology"]["nodes"][0]["compute_id"] == "vm"
 
 
-@pytest.mark.asyncio
 async def test_import_iou_non_linux(windows_platform, tmpdir, controller):
     """
     On non linux host IOU should be moved to the GNS3 VM
@@ -420,7 +408,6 @@ async def test_import_iou_non_linux(windows_platform, tmpdir, controller):
     mock.assert_called_with(controller._computes["vm"], project_id, project.path, os.path.join('project-files', 'iou', topo["topology"]["nodes"][0]['node_id']))
 
 
-@pytest.mark.asyncio
 async def test_import_node_id(linux_platform, tmpdir, controller):
     """
     When importing a node, node_id should change
@@ -514,7 +501,6 @@ async def test_import_node_id(linux_platform, tmpdir, controller):
         assert os.path.exists(os.path.join(project.path, "project-files", "iou", topo["topology"]["nodes"][0]["node_id"], "startup.cfg"))
 
 
-@pytest.mark.asyncio
 async def test_import_keep_compute_ids(windows_platform, tmpdir, controller):
     """
     On linux host IOU should be moved to the GNS3 VM
@@ -560,7 +546,6 @@ async def test_import_keep_compute_ids(windows_platform, tmpdir, controller):
         assert topo["topology"]["nodes"][0]["compute_id"] == "local"
 
 
-@pytest.mark.asyncio
 async def test_move_files_to_compute(tmpdir):
 
     project_id = str(uuid.uuid4())
@@ -577,13 +562,11 @@ async def test_move_files_to_compute(tmpdir):
     assert not os.path.exists(str(tmpdir / "project-files" / "docker"))
 
 
-@pytest.mark.asyncio
-async def test_import_project_name_and_location(projects_dir, controller):
+async def test_import_project_name_and_location(tmpdir, controller):
     """
     Import a project with a different location and name
     """
 
-    tmpdir = Path(projects_dir)
     project_id = str(uuid.uuid4())
     topology = {
         "project_id": str(uuid.uuid4()),

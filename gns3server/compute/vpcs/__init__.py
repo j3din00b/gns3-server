@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -88,4 +89,4 @@ class VPCS(BaseManager):
         :returns: working directory name
         """
 
-        return os.path.join("vpcs", f"pc-{legacy_vm_id}")
+        return os.path.join("vpcs", "pc-{}".format(legacy_vm_id))

@@ -67,13 +67,13 @@ echo "Re-create: $GNS3SERVER_DIR/gns3server/static/web-ui"
 mkdir -p "$GNS3SERVER_DIR/gns3server/static/web-ui/"
 
 if [ "$CUSTOM_REPO" = false ] ; then
-    if [ ! -d "$REPO_DIR" ]; then
+    if [ ! -d /tmp/gns3-web-ui ]; then
         git clone https://github.com/GNS3/gns3-web-ui.git "$REPO_DIR"
     fi
 
     cd "$REPO_DIR"
 
-    git checkout master-3.0
+    git checkout 2.2
     git fetch --tags
     git pull
 
@@ -91,9 +91,7 @@ echo "Current working dir $REPO_DIR"
 cd "$REPO_DIR"
 
 yarn install
-
-# FIXME: remove --build-optimizer=false
-yarn ng build --source-map=false --build-optimizer=false --configuration=production --base-href /static/web-ui/
+yarn ng build --source-map=false --configuration=production --base-href /static/web-ui/
 
 cp -R $REPO_DIR/dist/* "$GNS3SERVER_DIR/gns3server/static/web-ui/"
 

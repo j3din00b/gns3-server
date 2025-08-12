@@ -1,37 +1,38 @@
-FROM ubuntu:focal
+# Dockerfile for GNS3 server development
 
-WORKDIR /gns3server
+FROM ubuntu:24.04
 
-RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y \
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set the locale
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
+
+# this environment is externally managed
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+RUN apt-get update && apt-get install -y software-properties-common
+RUN add-apt-repository ppa:gns3/ppa
+RUN apt-get update && apt-get install -y \
     locales \
-    locales-all
-
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en
-ENV LC_ALL en_US.UTF-8
-
-COPY ./requirements.txt /gns3server/requirements.txt
-
-RUN DEBIAN_FRONTEND=noninteractive apt install -y \
-    locales \
-    software-properties-common \
     python3-pip \
-    python3-all \
-    python3-setuptools \
     python3-dev \
-    busybox-static \
-    gcc \
+    qemu-system-x86 \
     qemu-kvm \
-    libvirt-daemon-system
+    libvirt-daemon-system libvirt-clients \
+    x11vnc
 
-RUN add-apt-repository ppa:gns3/ppa && apt update && DEBIAN_FRONTEND=noninteractive apt install -y \
-    vpcs \
-    ubridge \
-    dynamips
+RUN locale-gen en_US.UTF-8
 
-COPY . /gns3server
+# Install uninstall to install dependencies
+RUN apt-get install -y vpcs ubridge
 
-RUN mkdir -p ~/.config/GNS3/3.0/
-RUN cp scripts/gns3_server.conf ~/.config/GNS3/3.0/
+ADD . /server
+WORKDIR /server
 
-RUN python3 -m pip install .
+RUN pip3 install --no-cache-dir -r /server/requirements.txt
+
+EXPOSE 3080
+
+CMD [ "python3", "-m", "gns3server", "--port", "3080" ]

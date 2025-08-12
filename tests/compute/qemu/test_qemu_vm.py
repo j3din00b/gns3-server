@@ -16,11 +16,10 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
-import pytest_asyncio
 import asyncio
 import os
-import stat
 import sys
+import stat
 from tests.utils import asyncio_patch, AsyncioMagicMock
 
 
@@ -34,7 +33,7 @@ from gns3server.utils import force_unix_path, macaddress_to_int, int_to_macaddre
 from gns3server.compute.notification_manager import NotificationManager
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def manager(port_manager):
 
     m = Qemu.instance()
@@ -60,25 +59,27 @@ def fake_qemu_img_binary(monkeypatch, tmpdir):
 def fake_qemu_binary(monkeypatch, tmpdir):
 
     monkeypatch.setenv("PATH", str(tmpdir))
-    bin_path = os.path.join(os.environ["PATH"], "qemu-system-x86_64")
+    if sys.platform.startswith("win"):
+        bin_path = os.path.join(os.environ["PATH"], "qemu-system-x86_64w.exe")
+    else:
+        bin_path = os.path.join(os.environ["PATH"], "qemu-system-x86_64")
     with open(bin_path, "w+") as f:
         f.write("1")
     os.chmod(bin_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
     return bin_path
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest.fixture(scope="function")
 async def vm(compute_project, manager, fake_qemu_binary, fake_qemu_img_binary):
 
     manager.port_manager.console_host = "127.0.0.1"
     vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, qemu_path=fake_qemu_binary)
     vm._process_priority = "normal"  # Avoid complexity for Windows tests
-    vm._replicate_network_connection_state = False  # to avoid delay when starting/stopping the VM
     vm._start_ubridge = AsyncioMagicMock()
     vm._ubridge_hypervisor = MagicMock()
     vm._ubridge_hypervisor.is_running.return_value = True
-    vm.manager.config.settings.Qemu.enable_hardware_acceleration = False
     vm.manager.get_qemu_version = AsyncioMagicMock(return_value="6.2.0")
+    vm.manager.config.set("Qemu", "enable_hardware_acceleration", False)
     return vm
 
 
@@ -90,7 +91,6 @@ def running_subprocess_mock():
     return mm
 
 
-@pytest.mark.asyncio
 async def test_vm(compute_project, manager, fake_qemu_binary):
 
     vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, qemu_path=fake_qemu_binary)
@@ -98,22 +98,22 @@ async def test_vm(compute_project, manager, fake_qemu_binary):
     assert vm.id == "00010203-0405-0607-0809-0a0b0c0d0e0f"
 
 
-@pytest.mark.asyncio
-async def test_vm_create(compute_project, manager, fake_qemu_binary):
+async def test_vm_create(tmpdir, compute_project, manager, fake_qemu_binary):
 
-    vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, qemu_path=fake_qemu_binary)
-    fake_img = os.path.join(vm.working_dir, 'hello')
+    fake_img = str(tmpdir / 'hello')
+
     with open(fake_img, 'w+') as f:
         f.write('hello')
+
+    vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, qemu_path=fake_qemu_binary)
     vm._hda_disk_image = fake_img
 
     await vm.create()
 
     # tests if `create` created md5sums
-    assert os.path.exists(os.path.join(vm.working_dir, 'hello.md5sum'))
+    assert os.path.exists(str(tmpdir / 'hello.md5sum'))
 
 
-@pytest.mark.asyncio
 async def test_vm_invalid_qemu_with_platform(compute_project, manager, fake_qemu_binary):
 
     vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, qemu_path="/usr/fake/bin/qemu-system-64", platform="x86_64")
@@ -122,7 +122,6 @@ async def test_vm_invalid_qemu_with_platform(compute_project, manager, fake_qemu
     assert vm.platform == "x86_64"
 
 
-@pytest.mark.asyncio
 async def test_vm_invalid_qemu_without_platform(compute_project, manager, fake_qemu_binary):
 
     vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, qemu_path="/usr/fake/bin/qemu-system-x86_64")
@@ -131,7 +130,6 @@ async def test_vm_invalid_qemu_without_platform(compute_project, manager, fake_q
     assert vm.platform == "x86_64"
 
 
-@pytest.mark.asyncio
 async def test_is_running(vm, running_subprocess_mock):
 
     vm._process = None
@@ -142,7 +140,6 @@ async def test_is_running(vm, running_subprocess_mock):
     assert vm.is_running() is False
 
 
-@pytest.mark.asyncio
 async def test_start(vm, running_subprocess_mock):
 
     with asyncio_patch("gns3server.compute.qemu.QemuVM.start_wrap_console"):
@@ -152,7 +149,6 @@ async def test_start(vm, running_subprocess_mock):
             assert vm.command_line == ' '.join(mock.call_args[0])
 
 
-@pytest.mark.asyncio
 async def test_stop(vm, running_subprocess_mock):
 
     process = running_subprocess_mock
@@ -172,7 +168,6 @@ async def test_stop(vm, running_subprocess_mock):
             process.terminate.assert_called_with()
 
 
-@pytest.mark.asyncio
 async def test_termination_callback(vm):
 
     vm.status = "started"
@@ -187,7 +182,7 @@ async def test_termination_callback(vm):
         assert event == vm
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
 async def test_termination_callback_error(vm, tmpdir):
 
     with open(str(tmpdir / "qemu.log"), "w+") as f:
@@ -202,16 +197,15 @@ async def test_termination_callback_error(vm, tmpdir):
 
         await queue.get(1)  # Ping
 
-        (action, event, kwargs) = await queue.get(1)
+        (action, event, kwargs) = queue.get_nowait()
         assert action == "node.updated"
         assert event == vm
 
-        (action, event, kwargs) = await queue.get(1)
+        (action, event, kwargs) = queue.get_nowait()
         assert action == "log.error"
         assert event["message"] == "QEMU process has stopped, return code: 1\nBOOMM"
 
 
-@pytest.mark.asyncio
 async def test_reload(vm):
 
     with asyncio_patch("gns3server.compute.qemu.QemuVM._control_vm") as m:
@@ -219,7 +213,6 @@ async def test_reload(vm):
         m.assert_called_with("system_reset")
 
 
-@pytest.mark.asyncio
 async def test_suspend(vm, running_subprocess_mock):
 
     vm._process = running_subprocess_mock
@@ -229,7 +222,6 @@ async def test_suspend(vm, running_subprocess_mock):
             m.assert_called_with("stop")
 
 
-@pytest.mark.asyncio
 async def test_add_nio_binding_udp(vm):
 
     nio = Qemu.instance().create_nio({"type": "nio_udp", "lport": 4242, "rport": 4243, "rhost": "127.0.0.1", "filters": {}})
@@ -238,7 +230,6 @@ async def test_add_nio_binding_udp(vm):
     assert nio.lport == 4242
 
 
-@pytest.mark.asyncio
 async def test_port_remove_nio_binding(vm):
 
     nio = Qemu.instance().create_nio({"type": "nio_udp", "lport": 4242, "rport": 4243, "rhost": "127.0.0.1", "filters": {}})
@@ -247,7 +238,6 @@ async def test_port_remove_nio_binding(vm):
     assert vm._ethernet_adapters[0].ports[0] is None
 
 
-@pytest.mark.asyncio
 async def test_close(vm, port_manager):
 
     with asyncio_patch("gns3server.compute.qemu.QemuVM.start_wrap_console"):
@@ -271,7 +261,10 @@ def test_set_qemu_path(vm, tmpdir, fake_qemu_binary):
         vm.qemu_path = None
 
     # Should not crash with unicode characters
-    path = str(tmpdir / "\u62FF" / "qemu-system-mips")
+    if sys.platform.startswith("win"):
+        path = str(tmpdir / "\u62FF" / "qemu-system-mipsw.exe")
+    else:
+        path = str(tmpdir / "\u62FF" / "qemu-system-mips")
 
     os.makedirs(str(tmpdir / "\u62FF"))
 
@@ -283,9 +276,10 @@ def test_set_qemu_path(vm, tmpdir, fake_qemu_binary):
         f.write("1")
 
     # Raise because file is not executable
-    with pytest.raises(QemuError):
-        vm.qemu_path = path
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    if not sys.platform.startswith("win"):
+        with pytest.raises(QemuError):
+            vm.qemu_path = path
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
     vm.qemu_path = path
     assert vm.qemu_path == path
@@ -305,7 +299,8 @@ def test_set_qemu_path_windows(vm):
 
     bin_path = os.path.join(os.environ["PATH"], "qemu-system-x86_64w.EXE")
     open(bin_path, "w+").close()
-    os.chmod(bin_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    if not sys.platform.startswith("win"):
+        os.chmod(bin_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
     vm.qemu_path = bin_path
 
@@ -317,7 +312,8 @@ def test_set_qemu_path_old_windows(vm):
 
     bin_path = os.path.join(os.environ["PATH"], "qemu.exe")
     open(bin_path, "w+").close()
-    os.chmod(bin_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    if not sys.platform.startswith("win"):
+        os.chmod(bin_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
     vm.qemu_path = bin_path
 
@@ -325,6 +321,7 @@ def test_set_qemu_path_old_windows(vm):
     assert vm.platform == "i386"
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
 def test_set_qemu_path_kvm_binary(vm, fake_qemu_binary):
 
     bin_path = os.path.join(os.environ["PATH"], "qemu-kvm")
@@ -339,19 +336,20 @@ def test_set_qemu_path_kvm_binary(vm, fake_qemu_binary):
     assert vm.platform == "x86_64"
 
 
-@pytest.mark.asyncio
 async def test_set_platform(compute_project, manager):
 
     manager.config_disk = None  # avoids conflict with config.img support
     with patch("shutil.which", return_value="/bin/qemu-system-x86_64") as which_mock:
         with patch("gns3server.compute.qemu.QemuVM._check_qemu_path"):
             vm = QemuVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, platform="x86_64")
-            which_mock.assert_called_with("qemu-system-x86_64", path=mock.ANY)
+            if sys.platform.startswith("win"):
+                which_mock.assert_called_with("qemu-system-x86_64w.exe", path=mock.ANY)
+            else:
+                which_mock.assert_called_with("qemu-system-x86_64", path=mock.ANY)
     assert vm.platform == "x86_64"
     assert vm.qemu_path == "/bin/qemu-system-x86_64"
 
 
-@pytest.mark.asyncio
 async def test_disk_options(vm, tmpdir, fake_qemu_img_binary):
 
     vm._hda_disk_image = str(tmpdir / "test.qcow2")
@@ -374,7 +372,6 @@ async def test_disk_options(vm, tmpdir, fake_qemu_img_binary):
     ]
 
 
-@pytest.mark.asyncio
 async def test_cdrom_option(vm, tmpdir, fake_qemu_img_binary):
 
     vm._cdrom_image = str(tmpdir / "test.iso")
@@ -385,7 +382,6 @@ async def test_cdrom_option(vm, tmpdir, fake_qemu_img_binary):
     assert ' '.join(['-cdrom', str(tmpdir / "test.iso")]) in ' '.join(options)
 
 
-@pytest.mark.asyncio
 async def test_bios_option(vm, tmpdir, fake_qemu_img_binary):
 
     vm._bios_image = str(tmpdir / "test.img")
@@ -395,25 +391,27 @@ async def test_bios_option(vm, tmpdir, fake_qemu_img_binary):
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Test not working on Windows")
-@pytest.mark.asyncio
 async def test_uefi_boot_mode_option(vm, tmpdir, images_dir, fake_qemu_img_binary):
 
     vm._uefi = True
 
     # create fake OVMF files
-    ovmf_code_path = os.path.join(images_dir, "OVMF_CODE.fd")
-    with open(ovmf_code_path, "w+") as f:
-        f.write('1')
-    ovmf_vars_path = os.path.join(images_dir, "OVMF_VARS.fd")
+    system_ovmf_firmware_path = "/usr/share/OVMF/OVMF_CODE_4M.fd"
+    if os.path.exists(system_ovmf_firmware_path):
+        ovmf_code_path = system_ovmf_firmware_path
+    else:
+        ovmf_code_path = os.path.join(images_dir, "OVMF_CODE_4M.fd")
+        with open(ovmf_code_path, "w+") as f:
+            f.write('1')
+    ovmf_vars_path = os.path.join(images_dir, "OVMF_VARS_4M.fd")
     with open(ovmf_vars_path, "w+") as f:
         f.write('1')
 
     options = await vm._build_command()
     assert ' '.join(["-drive", "if=pflash,format=raw,readonly,file={}".format(ovmf_code_path)]) in ' '.join(options)
-    assert ' '.join(["-drive", "if=pflash,format=raw,file={}".format(os.path.join(vm.working_dir, "OVMF_VARS.fd"))]) in ' '.join(options)
+    assert ' '.join(["-drive", "if=pflash,format=raw,file={}".format(os.path.join(vm.working_dir, "OVMF_VARS_4M.fd"))]) in ' '.join(options)
 
 
-@pytest.mark.asyncio
 async def test_uefi_with_bios_image_already_configured(vm, tmpdir, fake_qemu_img_binary):
 
     vm._bios_image = str(tmpdir / "test.img")
@@ -422,7 +420,6 @@ async def test_uefi_with_bios_image_already_configured(vm, tmpdir, fake_qemu_img
         await vm._build_command()
 
 
-@pytest.mark.asyncio
 async def test_vnc_option(vm, fake_qemu_img_binary):
 
     vm._console_type = 'vnc'
@@ -431,7 +428,6 @@ async def test_vnc_option(vm, fake_qemu_img_binary):
     assert '-vnc 127.0.0.1:5' in ' '.join(options)
 
 
-@pytest.mark.asyncio
 async def test_spice_option(vm, fake_qemu_img_binary):
 
     vm._console_type = 'spice'
@@ -441,7 +437,6 @@ async def test_spice_option(vm, fake_qemu_img_binary):
     assert '-vga qxl' in ' '.join(options)
 
 
-@pytest.mark.asyncio
 async def test_tpm_option(vm, tmpdir, fake_qemu_img_binary):
 
     vm._tpm = True
@@ -452,7 +447,7 @@ async def test_tpm_option(vm, tmpdir, fake_qemu_img_binary):
     assert '-tpmdev emulator,id=tpm0,chardev=chrtpm' in ' '.join(options)
     assert '-device tpm-tis,tpmdev=tpm0' in ' '.join(options)
 
-@pytest.mark.asyncio
+
 async def test_disk_options_multiple_disk(vm, tmpdir, fake_qemu_img_binary):
 
     vm._hda_disk_image = str(tmpdir / "test0.qcow2")
@@ -480,7 +475,7 @@ async def test_disk_options_multiple_disk(vm, tmpdir, fake_qemu_img_binary):
     ]
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
 async def test_set_process_priority(vm, fake_qemu_img_binary):
 
     with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()) as process:
@@ -493,7 +488,7 @@ async def test_set_process_priority(vm, fake_qemu_img_binary):
         assert args == ("renice", "-n", "5", "-p", "42")
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
 async def test_set_process_priority_normal(vm, fake_qemu_img_binary):
 
     with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()) as process:
@@ -505,12 +500,11 @@ async def test_set_process_priority_normal(vm, fake_qemu_img_binary):
 
 def test_json(vm, compute_project):
 
-    json = vm.asdict()
+    json = vm.__json__()
     assert json["name"] == vm.name
     assert json["project_id"] == compute_project.id
 
 
-@pytest.mark.asyncio
 async def test_control_vm(vm, running_subprocess_mock):
 
     vm._process = running_subprocess_mock
@@ -523,7 +517,6 @@ async def test_control_vm(vm, running_subprocess_mock):
     assert res is None
 
 
-@pytest.mark.asyncio
 async def test_control_vm_expect_text(vm, running_subprocess_mock):
 
     vm._process = running_subprocess_mock
@@ -542,7 +535,6 @@ async def test_control_vm_expect_text(vm, running_subprocess_mock):
     assert res == "epic product"
 
 
-@pytest.mark.asyncio
 async def test_build_command(vm, fake_qemu_binary):
 
     os.environ["DISPLAY"] = "0:0"
@@ -556,7 +548,7 @@ async def test_build_command(vm, fake_qemu_binary):
             "-m",
             "256M",
             "-smp",
-            "cpus=1,maxcpus=1,sockets=1",
+            "cpus=1,sockets=1",
             "-boot",
             "order=c",
             "-uuid",
@@ -574,7 +566,6 @@ async def test_build_command(vm, fake_qemu_binary):
         ]
 
 
-@pytest.mark.asyncio
 async def test_build_command_manual_uuid(vm):
     """
     If user has set a uuid we keep it
@@ -588,7 +579,6 @@ async def test_build_command_manual_uuid(vm):
         assert vm.id not in cmd
 
 
-@pytest.mark.asyncio
 async def test_build_command_kvm(linux_platform, vm, fake_qemu_binary):
     """
     Qemu 2.4 introduce an issue with KVM
@@ -607,7 +597,7 @@ async def test_build_command_kvm(linux_platform, vm, fake_qemu_binary):
                 "-m",
                 "256M",
                 "-smp",
-                "cpus=1,maxcpus=1,sockets=1",
+                "cpus=1,sockets=1",
                 "-enable-kvm",
                 "-boot",
                 "order=c",
@@ -625,7 +615,6 @@ async def test_build_command_kvm(linux_platform, vm, fake_qemu_binary):
             ]
 
 
-@pytest.mark.asyncio
 async def test_build_command_kvm_2_4(linux_platform, vm, fake_qemu_binary):
     """
     Qemu 2.4 introduce an issue with KVM
@@ -644,7 +633,7 @@ async def test_build_command_kvm_2_4(linux_platform, vm, fake_qemu_binary):
                 "-m",
                 "256M",
                 "-smp",
-                "cpus=1,maxcpus=1,sockets=1",
+                "cpus=1,sockets=1",
                 "-enable-kvm",
                 "-machine",
                 "smm=off",
@@ -664,7 +653,7 @@ async def test_build_command_kvm_2_4(linux_platform, vm, fake_qemu_binary):
             ]
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
 async def test_build_command_without_display(vm):
 
     vm.manager.get_qemu_version = AsyncioMagicMock(return_value="2.5.0")
@@ -674,7 +663,6 @@ async def test_build_command_without_display(vm):
         assert "-nographic" in cmd
 
 
-@pytest.mark.asyncio
 async def test_build_command_two_adapters(vm, fake_qemu_binary):
 
     vm.manager.get_qemu_version = AsyncioMagicMock(return_value="2.5.0")
@@ -691,7 +679,7 @@ async def test_build_command_two_adapters(vm, fake_qemu_binary):
             "-m",
             "256M",
             "-smp",
-            "cpus=1,maxcpus=1,sockets=1",
+            "cpus=1,sockets=1",
             "-boot",
             "order=c",
             "-uuid",
@@ -712,7 +700,6 @@ async def test_build_command_two_adapters(vm, fake_qemu_binary):
         ]
 
 
-@pytest.mark.asyncio
 async def test_build_command_two_adapters_mac_address(vm):
     """
     Should support multiple base vmac address
@@ -739,7 +726,6 @@ async def test_build_command_two_adapters_mac_address(vm):
         assert "e1000,mac={},netdev=gns3-1".format(mac_1) in cmd
 
 
-@pytest.mark.asyncio
 async def test_build_command_large_number_of_adapters(vm):
     """
     When we have more than 28 interface we need to add a pci bridge for
@@ -781,7 +767,7 @@ async def test_build_command_large_number_of_adapters(vm):
     with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()):
         await vm._build_command()
 
-@pytest.mark.asyncio
+
 async def test_build_command_with_virtio_net_pci_adapter(vm):
     """
     Test virtio-net-pci adapter which has parameters speed=1000 & duplex=full hard-coded
@@ -795,7 +781,7 @@ async def test_build_command_with_virtio_net_pci_adapter(vm):
     assert "virtio-net-pci,mac=00:00:ab:0e:0f:09,speed=10000,duplex=full,netdev=gns3-0" in cmd
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
 async def test_build_command_with_invalid_options(vm):
 
     vm.options = "'test"
@@ -804,7 +790,6 @@ async def test_build_command_with_invalid_options(vm):
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
-@pytest.mark.asyncio
 async def test_build_command_with_forbidden_options(vm):
 
     vm.options = "-blockdev"
@@ -822,7 +807,6 @@ def test_hda_disk_image(vm, images_dir):
     assert vm.hda_disk_image == force_unix_path(os.path.join(images_dir, "QEMU", "test2"))
 
 
-@pytest.mark.asyncio
 async def test_hda_disk_image_non_linked_clone(vm, images_dir, compute_project, manager, fake_qemu_binary):
     """
     Two non linked can't use the same image at the same time
@@ -908,6 +892,12 @@ def test_options(linux_platform, vm):
     vm.options = "-enable-kvm"
     assert vm.options == "-machine accel=kvm"
 
+    vm.options = "-icount 12"
+    assert vm.options == "-icount 12"
+
+    vm.options = "-icount 12 -no-kvm"
+    assert vm.options == "-icount 12 -machine accel=tcg"
+
 
 def test_options_windows(windows_platform, vm):
     vm.options = "-no-kvm"
@@ -936,52 +926,44 @@ def test_get_qemu_img(vm, tmpdir):
 #         vm._get_qemu_img()
 
 
-@pytest.mark.asyncio
 async def test_run_with_hardware_acceleration_darwin(darwin_platform, vm):
 
-    vm.manager.config.settings.Qemu.enable_hardware_acceleration = False
+    vm.manager.config.set("Qemu", "enable_hardware_acceleration", False)
     assert await vm._run_with_hardware_acceleration("qemu-system-x86_64", "") is False
 
 
-@pytest.mark.asyncio
 async def test_run_with_hardware_acceleration_windows(windows_platform, vm):
 
-    vm.manager.config.settings.Qemu.enable_hardware_acceleration = False
+    vm.manager.config.set("Qemu", "enable_hardware_acceleration", False)
     assert await vm._run_with_hardware_acceleration("qemu-system-x86_64", "") is False
 
 
-@pytest.mark.asyncio
 async def test_run_with_kvm_linux(linux_platform, vm):
 
     with patch("os.path.exists", return_value=True) as os_path:
-        vm.manager.config.settings.Qemu.enable_hardware_acceleration = True
+        vm.manager.config.set("Qemu", "enable_kvm", True)
         assert await vm._run_with_hardware_acceleration("qemu-system-x86_64", "") is True
         os_path.assert_called_with("/dev/kvm")
 
 
-@pytest.mark.asyncio
 async def test_run_with_kvm_linux_options_no_kvm(linux_platform, vm):
 
     with patch("os.path.exists", return_value=True) as os_path:
-        vm.manager.config.settings.Qemu.enable_hardware_acceleration = True
+        vm.manager.config.set("Qemu", "enable_kvm", True)
         assert await vm._run_with_hardware_acceleration("qemu-system-x86_64", "-machine accel=tcg") is False
 
 
-@pytest.mark.asyncio
 async def test_run_with_kvm_not_x86(linux_platform, vm):
 
     with patch("os.path.exists", return_value=True):
-        vm.manager.config.settings.Qemu.enable_hardware_acceleration = True
-        vm.manager.config.settings.Qemu.require_hardware_acceleration = True
+        vm.manager.config.set("Qemu", "enable_kvm", True)
         with pytest.raises(QemuError):
             await vm._run_with_hardware_acceleration("qemu-system-arm", "")
 
 
-@pytest.mark.asyncio
 async def test_run_with_kvm_linux_dev_kvm_missing(linux_platform, vm):
 
     with patch("os.path.exists", return_value=False):
-        vm.manager.config.settings.Qemu.enable_hardware_acceleration = True
-        vm.manager.config.settings.Qemu.require_hardware_acceleration = True
+        vm.manager.config.set("Qemu", "enable_kvm", True)
         with pytest.raises(QemuError):
             await vm._run_with_hardware_acceleration("qemu-system-x86_64", "")

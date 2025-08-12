@@ -18,7 +18,6 @@
 import uuid
 import os
 import pytest
-import pytest_asyncio
 from unittest.mock import patch, MagicMock
 from tests.utils import asyncio_patch
 
@@ -29,7 +28,7 @@ from gns3server.compute.error import NodeError, ImageMissingError
 from gns3server.utils import force_unix_path
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest.fixture(scope="function")
 async def vpcs(port_manager):
 
     VPCS._instance = None
@@ -38,7 +37,7 @@ async def vpcs(port_manager):
     return vpcs
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest.fixture(scope="function")
 async def qemu(port_manager):
 
     Qemu._instance = None
@@ -48,7 +47,6 @@ async def qemu(port_manager):
     return qemu
 
 
-@pytest.mark.asyncio
 async def test_create_node_new_topology(compute_project, vpcs):
 
     node_id = str(uuid.uuid4())
@@ -56,7 +54,6 @@ async def test_create_node_new_topology(compute_project, vpcs):
     assert node in compute_project.nodes
 
 
-@pytest.mark.asyncio
 async def test_create_twice_same_node_new_topology(compute_project, vpcs):
 
     compute_project._nodes = set()
@@ -68,12 +65,34 @@ async def test_create_twice_same_node_new_topology(compute_project, vpcs):
     assert len(compute_project.nodes) == 1
 
 
-@pytest.mark.asyncio
 async def test_create_node_new_topology_without_uuid(compute_project, vpcs):
 
     node = await vpcs.create_node("PC 1", compute_project.id, None)
     assert node in compute_project.nodes
     assert len(node.id) == 36
+
+
+async def test_create_node_old_topology(compute_project, tmpdir, vpcs):
+
+    with patch("gns3server.compute.project.Project.is_local", return_value=True):
+        # Create an old topology directory
+        project_dir = str(tmpdir / "testold")
+        node_dir = os.path.join(project_dir, "testold-files", "vpcs", "pc-1")
+        compute_project.path = project_dir
+        compute_project.name = "testold"
+        os.makedirs(node_dir, exist_ok=True)
+        with open(os.path.join(node_dir, "startup.vpc"), "w+") as f:
+            f.write("1")
+
+        node_id = 1
+        node = await vpcs.create_node("PC 1", compute_project.id, node_id)
+        assert len(node.id) == 36
+
+        assert os.path.exists(os.path.join(project_dir, "testold-files")) is False
+
+        node_dir = os.path.join(project_dir, "project-files", "vpcs", node.id)
+        with open(os.path.join(node_dir, "startup.vpc")) as f:
+            assert f.read() == "1"
 
 
 def test_get_abs_image_path(qemu, tmpdir, config):
@@ -85,7 +104,7 @@ def test_get_abs_image_path(qemu, tmpdir, config):
     path2 = force_unix_path(str(tmpdir / "QEMU" / "test2.bin"))
     open(path2, 'w+').close()
 
-    config.settings.Server.images_path = str(tmpdir)
+    config.set_section_config("Server", {"images_path": str(tmpdir)})
     assert qemu.get_abs_image_path(path1) == path1
     assert qemu.get_abs_image_path("test1.bin") == path1
     assert qemu.get_abs_image_path(path2) == path2
@@ -104,16 +123,15 @@ def test_get_abs_image_path_non_local(qemu, tmpdir, config):
     path2 = force_unix_path(str(path2))
 
     # If non local we can't use path outside images directory
-    config.settings.Server.images_path = str(tmpdir / "images")
+    config.set_section_config("Server", {"images_path": str(tmpdir / "images"), "local": False})
     assert qemu.get_abs_image_path(path1) == path1
     with pytest.raises(NodeError):
         qemu.get_abs_image_path(path2)
     with pytest.raises(NodeError):
         qemu.get_abs_image_path("C:\\test2.bin")
 
-    # config.settings.Server.images_path = str(tmpdir / "images")
-    # config.settings.Server.local = True
-    # assert qemu.get_abs_image_path(path2) == path2
+    config.set_section_config("Server", {"images_path": str(tmpdir / "images"), "local": True})
+    assert qemu.get_abs_image_path(path2) == path2
 
 
 def test_get_abs_image_additional_image_paths(qemu, tmpdir, config):
@@ -126,8 +144,10 @@ def test_get_abs_image_additional_image_paths(qemu, tmpdir, config):
     path2.write("1", ensure=True)
     path2 = force_unix_path(str(path2))
 
-    config.settings.Server.images_path = str(tmpdir / "images1")
-    config.settings.Server.additional_images_paths = "/tmp/null24564;" + str(tmpdir / "images2")
+    config.set_section_config("Server", {
+        "images_path": str(tmpdir / "images1"),
+        "additional_images_path": "/tmp/null24564;{}".format(str(tmpdir / "images2")),
+        "local": False})
 
     assert qemu.get_abs_image_path("test1.bin") == path1
     assert qemu.get_abs_image_path("test2.bin") == path2
@@ -148,8 +168,9 @@ def test_get_abs_image_recursive(qemu, tmpdir, config):
     path2.write("1", ensure=True)
     path2 = force_unix_path(str(path2))
 
-    config.settings.Server.images_path = str(tmpdir / "images1")
-
+    config.set_section_config("Server", {
+        "images_path": str(tmpdir / "images1"),
+        "local": False})
     assert qemu.get_abs_image_path("test1.bin") == path1
     assert qemu.get_abs_image_path("test2.bin") == path2
     # Absolute path
@@ -166,8 +187,9 @@ def test_get_abs_image_recursive_ova(qemu, tmpdir, config):
     path2.write("1", ensure=True)
     path2 = force_unix_path(str(path2))
 
-    config.settings.Server.images_path = str(tmpdir / "images1")
-
+    config.set_section_config("Server", {
+        "images_path": str(tmpdir / "images1"),
+        "local": False})
     assert qemu.get_abs_image_path("demo/test.ova/test1.bin") == path1
     assert qemu.get_abs_image_path("test.ova/test2.bin") == path2
     # Absolute path
@@ -195,21 +217,21 @@ def test_get_relative_image_path(qemu, tmpdir, config):
     path5 = force_unix_path(str(tmpdir / "images1" / "VBOX" / "test5.bin"))
     open(path5, 'w+').close()
 
-    config.settings.Server.images_path = str(tmpdir / "images1")
-    config.settings.Server.additional_images_paths = str(tmpdir / "images2")
-
+    config.set_section_config("Server", {
+        "images_path": str(tmpdir / "images1"),
+        "additional_images_path": str(tmpdir / "images2"),
+        "local": True
+    })
     assert qemu.get_relative_image_path(path1) == "test1.bin"
     assert qemu.get_relative_image_path("test1.bin") == "test1.bin"
     assert qemu.get_relative_image_path(path2) == "test2.bin"
     assert qemu.get_relative_image_path("test2.bin") == "test2.bin"
     assert qemu.get_relative_image_path("../test1.bin") == "test1.bin"
     assert qemu.get_relative_image_path("test3.bin") == "test3.bin"
-    with pytest.raises(NodeError):
-        assert qemu.get_relative_image_path(path4) == path4
+    assert qemu.get_relative_image_path(path4) == path4
     assert qemu.get_relative_image_path(path5) == path5
 
 
-@pytest.mark.asyncio
 async def test_list_images(qemu, tmpdir):
 
     fake_images = ["a.qcow2", "b.qcow2", ".blu.qcow2", "a.qcow2.md5sum"]
@@ -226,7 +248,6 @@ async def test_list_images(qemu, tmpdir):
         ]
 
 
-@pytest.mark.asyncio
 async def test_list_images_recursives(qemu, tmpdir):
 
     tmp_images_dir = os.path.join(tmpdir, "images")
@@ -250,21 +271,18 @@ async def test_list_images_recursives(qemu, tmpdir):
         ]
 
 
-@pytest.mark.asyncio
 async def test_list_images_empty(qemu, tmpdir):
 
     with patch("gns3server.compute.Qemu.get_images_directory", return_value=str(tmpdir)):
         assert await qemu.list_images() == []
 
 
-@pytest.mark.asyncio
 async def test_list_images_directory_not_exist(qemu):
 
     with patch("gns3server.compute.Qemu.get_images_directory", return_value="/bla"):
         assert await qemu.list_images() == []
 
 
-@pytest.mark.asyncio
 async def test_delete_node(vpcs, compute_project):
 
     compute_project._nodes = set()
@@ -277,7 +295,6 @@ async def test_delete_node(vpcs, compute_project):
     assert node not in compute_project.nodes
 
 
-@pytest.mark.asyncio
 async def test_duplicate_vpcs(vpcs, compute_project):
 
     source_node_id = str(uuid.uuid4())
@@ -292,7 +309,6 @@ async def test_duplicate_vpcs(vpcs, compute_project):
         assert startup == "set pcname PC-2\nip dhcp\n".strip()
 
 
-@pytest.mark.asyncio
 async def test_duplicate_ethernet_switch(compute_project):
 
     with asyncio_patch('gns3server.compute.dynamips.nodes.ethernet_switch.EthernetSwitch.create'):

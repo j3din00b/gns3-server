@@ -21,7 +21,6 @@ from tests.utils import asyncio_patch, AsyncioMagicMock
 
 from gns3server.controller.gns3vm import GNS3VM
 from gns3server.controller.gns3vm.gns3_vm_error import GNS3VMError
-from pydantic import SecretStr
 
 
 @pytest.fixture
@@ -33,7 +32,7 @@ def dummy_engine():
     engine.protocol = "https"
     engine.port = 8442
     engine.user = "hello"
-    engine.password = SecretStr("world")
+    engine.password = "world"
     return engine
 
 
@@ -48,7 +47,6 @@ def dummy_gns3vm(controller, dummy_engine):
     return vm
 
 
-@pytest.mark.asyncio
 async def test_list(controller):
 
     vm = GNS3VM(controller)
@@ -62,14 +60,13 @@ async def test_list(controller):
         await vm.list("hyperv")
 
 
-@pytest.mark.asyncio
 async def test_json(controller):
 
     vm = GNS3VM(controller)
-    assert vm.asdict() == vm._settings
+    assert vm.__json__() == vm._settings
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not working well on Windows")
 async def test_update_settings(controller):
 
     vm = GNS3VM(controller)
@@ -87,7 +84,7 @@ async def test_update_settings(controller):
     assert "vm" not in controller.computes
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not working well on Windows")
 async def test_auto_start(controller, dummy_gns3vm, dummy_engine):
     """
     When start the compute should be add to the controller
@@ -101,10 +98,10 @@ async def test_auto_start(controller, dummy_gns3vm, dummy_engine):
     assert controller.computes["vm"].port == 80
     assert controller.computes["vm"].protocol == "https"
     assert controller.computes["vm"].user == "hello"
-    assert controller.computes["vm"].password.get_secret_value() == "world"
+    assert controller.computes["vm"].password == "world"
 
 
-@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not working well on Windows")
 async def test_auto_start_with_error(controller, dummy_gns3vm, dummy_engine):
 
     dummy_engine.start.side_effect = GNS3VMError("Dummy error")

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -29,26 +30,21 @@ from .nodes.ethernet_hub import EthernetHub
 from .nodes.frame_relay_switch import FrameRelaySwitch
 
 import logging
-
 log = logging.getLogger(__name__)
 
-PLATFORMS = {
-    "c1700": C1700,
-    "c2600": C2600,
-    "c2691": C2691,
-    "c3725": C3725,
-    "c3745": C3745,
-    "c3600": C3600,
-    "c7200": C7200,
-}
+PLATFORMS = {'c1700': C1700,
+             'c2600': C2600,
+             'c2691': C2691,
+             'c3725': C3725,
+             'c3745': C3745,
+             'c3600': C3600,
+             'c7200': C7200}
 
 
-DEVICES = {
-    "atm_switch": ATMSwitch,
-    "frame_relay_switch": FrameRelaySwitch,
-    "ethernet_switch": EthernetSwitch,
-    "ethernet_hub": EthernetHub,
-}
+DEVICES = {'atm_switch': ATMSwitch,
+           'frame_relay_switch': FrameRelaySwitch,
+           'ethernet_switch': EthernetSwitch,
+           'ethernet_hub': EthernetHub}
 
 
 class DynamipsFactory:
@@ -61,11 +57,11 @@ class DynamipsFactory:
 
         if node_type == "dynamips":
             if platform not in PLATFORMS:
-                raise DynamipsError(f"Unknown router platform: {platform}")
+                raise DynamipsError("Unknown router platform: {}".format(platform))
 
             return PLATFORMS[platform](name, node_id, project, manager, dynamips_id, **kwargs)
         else:
             if node_type not in DEVICES:
-                raise DynamipsError(f"Unknown device type: {node_type}")
+                raise DynamipsError("Unknown device type: {}".format(node_type))
 
             return DEVICES[node_type](name, node_id, project, manager, **kwargs)

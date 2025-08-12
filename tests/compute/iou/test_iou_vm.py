@@ -16,23 +16,27 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
-import pytest_asyncio
 import asyncio
 import os
 import stat
 import socket
+import sys
 import uuid
 import shutil
 
 from tests.utils import asyncio_patch, AsyncioMagicMock
 
-from unittest.mock import MagicMock
-from gns3server.compute.iou.iou_vm import IOUVM
-from gns3server.compute.iou.iou_error import IOUError
-from gns3server.compute.iou import IOU
+from unittest.mock import patch, MagicMock
+
+pytestmark = pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
+
+if not sys.platform.startswith("win"):
+    from gns3server.compute.iou.iou_vm import IOUVM
+    from gns3server.compute.iou.iou_error import IOUError
+    from gns3server.compute.iou import IOU
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def manager(port_manager):
 
     m = IOU.instance()
@@ -40,13 +44,14 @@ async def manager(port_manager):
     return m
 
 
-@pytest_asyncio.fixture(scope="function")
-async def vm(compute_project, manager, config, tmpdir, fake_iou_bin, iourc_file):
+@pytest.fixture(scope="function")
+async def vm(compute_project, manager, tmpdir, fake_iou_bin, iourc_file):
 
     vm = IOUVM("test", str(uuid.uuid4()), compute_project, manager, application_id=1)
-    config.settings.IOU.iourc_path = iourc_file
+    config = manager.config.get_section_config("IOU")
+    config["iourc_path"] = iourc_file
+    manager.config.set_section_config("IOU", config)
     vm.path = "iou.bin"
-    vm._loader = []
     return vm
 
 
@@ -87,7 +92,6 @@ def test_vm_startup_config_content(compute_project, manager):
     assert vm.id == "00010203-0405-0607-0808-0a0b0c0d0e0f"
 
 
-@pytest.mark.asyncio
 async def test_start(vm):
 
     mock_process = MagicMock()
@@ -111,8 +115,7 @@ async def test_start(vm):
     vm._ubridge_send.assert_any_call("iol_bridge start IOL-BRIDGE-513")
 
 
-@pytest.mark.asyncio
-async def test_start_with_iourc(vm, tmpdir, config):
+async def test_start_with_iourc(vm, tmpdir):
 
     fake_file = str(tmpdir / "iourc")
     with open(fake_file, "w+") as f:
@@ -126,17 +129,16 @@ async def test_start_with_iourc(vm, tmpdir, config):
     vm._start_ubridge = AsyncioMagicMock(return_value=True)
     vm._ubridge_send = AsyncioMagicMock()
 
-    config.settings.IOU.iourc_path = fake_file
-    with asyncio_patch("asyncio.create_subprocess_exec", return_value=mock_process) as exec_mock:
-        mock_process.returncode = None
-        mock_process.communicate = AsyncioMagicMock(return_value=(None, None))
-        await vm.start()
-        assert vm.is_running()
-        arsgs, kwargs = exec_mock.call_args
-        assert kwargs["env"]["IOURC"] == fake_file
+    with patch("gns3server.config.Config.get_section_config", return_value={"iourc_path": fake_file}):
+        with asyncio_patch("asyncio.create_subprocess_exec", return_value=mock_process) as exec_mock:
+            mock_process.returncode = None
+            mock_process.communicate = AsyncioMagicMock(return_value=(None, None))
+            await vm.start()
+            assert vm.is_running()
+            arsgs, kwargs = exec_mock.call_args
+            assert kwargs["env"]["IOURC"] == fake_file
 
 
-@pytest.mark.asyncio
 async def test_rename_nvram_file(vm):
     """
     It should rename the nvram file to the correct name before launching the VM
@@ -153,7 +155,6 @@ async def test_rename_nvram_file(vm):
     assert os.path.exists(os.path.join(vm.working_dir, "vlan.dat-0000{}".format(vm.application_id)))
 
 
-@pytest.mark.asyncio
 async def test_stop(vm):
 
     process = MagicMock()
@@ -179,7 +180,6 @@ async def test_stop(vm):
             process.terminate.assert_called_with()
 
 
-@pytest.mark.asyncio
 async def test_reload(vm, fake_iou_bin):
 
     process = MagicMock()
@@ -205,7 +205,6 @@ async def test_reload(vm, fake_iou_bin):
             process.terminate.assert_called_with()
 
 
-@pytest.mark.asyncio
 async def test_close(vm, port_manager):
 
     process = MagicMock()
@@ -225,6 +224,7 @@ async def test_close(vm, port_manager):
 
 def test_path(vm, fake_iou_bin, config):
 
+    config.set_section_config("Server", {"local": True})
     vm.path = fake_iou_bin
     assert vm.path == fake_iou_bin
 
@@ -235,10 +235,9 @@ def test_path_relative(vm, fake_iou_bin):
     assert vm.path == fake_iou_bin
 
 
-@pytest.mark.asyncio
-async def test_path_invalid_bin(vm, tmpdir, config):
+def test_path_invalid_bin(vm, tmpdir, config):
 
-    config.settings.Server.images_path = str(tmpdir)
+    config.set_section_config("Server", {"local": True})
     path = str(tmpdir / "test.bin")
 
     with open(path, "w+") as f:
@@ -246,7 +245,7 @@ async def test_path_invalid_bin(vm, tmpdir, config):
 
     with pytest.raises(IOUError):
         vm.path = path
-        await vm._check_requirements()
+        vm._check_requirements()
 
 
 def test_create_netmap_config(vm):
@@ -261,7 +260,6 @@ def test_create_netmap_config(vm):
     assert "513:15/3    1:15/3" in content
 
 
-@pytest.mark.asyncio
 async def test_build_command(vm):
 
     assert await vm._build_command() == [vm.path, str(vm.application_id)]
@@ -326,7 +324,6 @@ def test_change_name(vm):
         assert f.read() == "no service password-encryption\nhostname charlie\nno ip icmp rate-limit unreachable"
 
 
-@pytest.mark.asyncio
 async def test_library_check(vm):
 
     with asyncio_patch("gns3server.utils.asyncio.subprocess_check_output", return_value=""):
@@ -337,7 +334,6 @@ async def test_library_check(vm):
             await vm._library_check()
 
 
-@pytest.mark.asyncio
 async def test_enable_l1_keepalives(vm):
 
     with asyncio_patch("gns3server.utils.asyncio.subprocess_check_output", return_value="***************************************************************\n\n-l		Enable Layer 1 keepalive messages\n-u <n>		UDP port base for distributed networks\n"):
@@ -353,7 +349,6 @@ async def test_enable_l1_keepalives(vm):
             assert command == ["test"]
 
 
-@pytest.mark.asyncio
 async def test_start_capture(vm, tmpdir, manager, free_console_port):
 
     output_file = str(tmpdir / "test.pcap")
@@ -363,7 +358,6 @@ async def test_start_capture(vm, tmpdir, manager, free_console_port):
     assert vm._adapters[0].get_nio(0).capturing
 
 
-@pytest.mark.asyncio
 async def test_stop_capture(vm, tmpdir, manager, free_console_port):
 
     output_file = str(tmpdir / "test.pcap")
@@ -380,7 +374,6 @@ def test_get_legacy_vm_workdir():
     assert IOU.get_legacy_vm_workdir(42, "bla") == "iou/device-42"
 
 
-@pytest.mark.asyncio
 async def test_invalid_iou_file(vm, iourc_file):
 
     hostname = socket.gethostname()

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2014 GNS3 Technologies Inc.
 #
@@ -22,6 +23,7 @@ from .port import Port
 
 
 class FastEthernetPort(Port):
+
     @staticmethod
     def long_name_type():
         """
